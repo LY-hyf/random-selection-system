@@ -21,10 +21,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
 /**
@@ -167,7 +164,7 @@ public class UsersServiceImpl implements UsersService {
     /**
      * 为用户分配角色。
      *
-     * <p>先删除用户原有角色关联，再批量写入新的角色关联，整个过程在同一事务内保证原子性。</p>
+     * <p>对传入的RoleIds[]进行null过滤，先删除用户原有角色关联，再批量写入新的角色关联，整个过程在同一事务内保证原子性。</p>
      *
      * @param id      用户 ID
      * @param request 分配角色请求
@@ -175,12 +172,29 @@ public class UsersServiceImpl implements UsersService {
     @Override
     @Transactional
     public void assignRoles(Long id, AssignRoleRequest request) {
-        sysUserRoleMapper.deleteByUserId(id);
-        List<Long> roleIds = request.getRoleIds();
-        if (roleIds != null && !roleIds.isEmpty()) {
-            sysUserRoleMapper.insertBatch(id, roleIds);
-        log.info("分配角色成功，userId: {}, roleIds: {}", id, request.getRoleIds());
+        // 1. 防御：如果 request 或 roleIds 为 null，视为空列表
+        List<Long> originalRoleIds = request.getRoleIds();
+        if (originalRoleIds == null) {
+            originalRoleIds = Collections.emptyList();
         }
+
+        // 2. 过滤掉 null 并去重（可选去重）
+        List<Long> validRoleIds = originalRoleIds.stream()
+                .filter(Objects::nonNull)
+                .distinct()  // 可选：去重，避免插入重复关联
+                .collect(Collectors.toList());
+
+        // 3. 先删除旧关联
+        sysUserRoleMapper.deleteByUserId(id);
+
+        // 4. 如果有有效角色，才执行批量插入
+        if (!validRoleIds.isEmpty()) {
+            sysUserRoleMapper.insertBatch(id, validRoleIds);
+        }
+
+        // 5. 日志记录有效数据，便于追踪
+        log.info("分配角色成功，userId: {}, 原始请求: {}, 实际分配: {}",
+                id, originalRoleIds, validRoleIds);
     }
 
     /**

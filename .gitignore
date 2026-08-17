@@ -1,0 +1,653 @@
+# ====================================
+# 🔴 第一优先级：敏感配置文件（必须忽略）
+# ====================================
+
+# 数据库配置
+*.properties
+*.properties.*
+application*.properties
+application*.yml
+application*.yaml
+bootstrap*.properties
+bootstrap*.yml
+jdbc.properties
+jdbc.yml
+database.properties
+db.properties
+dbconfig.properties
+hibernate.properties
+mybatis-config.properties
+spring-config.properties
+*.hbm.xml
+
+# 所有配置文件
+config/
+conf/
+*.conf
+*.config
+*.cfg
+*.ini
+*.xml
+*.json
+*.yaml
+*.yml
+!pom.xml
+!package.json
+!composer.json
+!*.config.js
+!*.config.ts
+!tsconfig.json
+!webpack.config.js
+!vite.config.js
+!babel.config.js
+
+# Spring Boot 环境配置
+application-dev.properties
+application-dev.yml
+application-prod.properties
+application-prod.yml
+application-test.properties
+application-test.yml
+application-uat.properties
+application-uat.yml
+application-local.properties
+application-local.yml
+
+# 环境变量（重中之重）
+.env
+.env.*
+!.env.example
+!.env.template
+!.env.sample
+*.env
+.envrc
+.env.local
+.env.production
+.env.development
+.env.staging
+.env.test
+.env.uat
+
+# ====================================
+# 🔴 第二优先级：密钥/证书/凭证
+# ====================================
+
+# 所有密钥文件
+*.key
+*.pem
+*.crt
+*.cer
+*.p12
+*.pfx
+*.csr
+*.p8
+*.p7b
+*.jks
+*.keystore
+*.truststore
+*.secret
+*.secrets
+*.token
+*.tokens
+*.accesskey
+*.private
+*.pub
+*.id_rsa
+*.id_ed25519
+*.id_ecdsa
+*.id_dsa
+*.ppk
+*.gpg
+*.asc
+
+# 云服务凭证
+service-account.json
+service-account.key
+credentials.json
+client_secret.json
+client-secret.json
+gcloud-service-key.json
+gcloud-service-key
+aws-credentials
+azure-credentials
+*.service-account.json
+*.service-account.key
+*.access-keys
+*.oauth
+
+# 密码/令牌文件
+*.password
+*.passwd
+*.cred
+*.credential
+*.credentials
+*.jwt
+*.apikey
+*.api-key
+*.secret-key
+*.private-key
+*.pubkey
+*.rsa
+*.dsa
+*.ecdsa
+
+# ====================================
+# 操作系统文件
+# ====================================
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.cache
+*.lnk
+*.tmp
+*.temp
+desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+*.swp
+*.swo
+*.swo.*
+*.swn
+*.un~
+com.apple.timemachine.supported
+com.apple.FinderInfo
+
+# Linux
+*~
+.directory
+*.pid
+*.lock
+*.socket
+*.sock
+
+# ====================================
+# IDE / 编辑器
+# ====================================
+
+# Visual Studio Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# Visual Studio / C#
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.pdb
+*.ilk
+*.iobj
+*.ipdb
+*.pyc
+*.pyo
+
+# JetBrains (IntelliJ, WebStorm, PyCharm, etc.)
+.idea/
+*.iml
+*.ipr
+*.iws
+.idea_modules/
+out/
+.idea/workspace.xml
+.idea/tasks.xml
+.idea/dictionaries/
+.idea/libraries/
+.idea/dataSources/
+.idea/httpRequests/
+
+# Eclipse
+.classpath
+.project
+.settings/
+.metadata/
+*.tmp
+*.log
+*.lck
+.buildpath
+.factorypath
+
+# NetBeans
+nbproject/
+nbdist/
+.idea/
+.nb-gradle/
+
+# Vim
+*.swp
+*.swo
+*.un~
+*.~*
+.*.swp
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+.sublime-*
+*.sublime-settings
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# ====================================
+# Node.js / JavaScript / TypeScript
+# ====================================
+
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+*.tsbuildinfo
+.eslintcache
+.stylelintcache
+.rpt2_cache/
+.tscache/
+.npm/
+.yarn/
+.yarnrc
+.yarn-integrity
+dist/
+build/
+out/
+lib/
+coverage/
+.nyc_output/
+.jest-cache/
+.vitest/
+.c8/
+.cache/
+.parcel-cache/
+.next/
+.nuxt/
+.output/
+.gatsby/
+.svelte-kit/
+.storybook-out/
+.stencil/
+
+# ====================================
+# Python
+# ====================================
+
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+pip-log.txt
+pip-delete-this-directory.txt
+.python-version
+*.log
+*.pid
+*.seed
+*.pid.lock
+.pytest_cache
+.mypy_cache
+.ruff_cache
+poetry.lock
+Pipfile.lock
+
+# ====================================
+# Java / Maven / Gradle
+# ====================================
+
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+*.zip
+*.tar.gz
+*.rar
+target/
+build/
+*.log
+*.tmp
+*.temp
+*.lock
+.classpath
+.project
+.settings/
+bin/
+out/
+gradle-wrapper.jar
+.gradle/
+gradle/
+gradlew
+gradlew.bat
+build.gradle
+settings.gradle
+*.hprof
+
+# ====================================
+# Go
+# ====================================
+
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.prof
+*.mod
+*.sum
+vendor/
+go.work
+go.work.sum
+__debug_bin*
+*.coverprofile
+coverage.out
+
+# ====================================
+# Rust
+# ====================================
+
+target/
+Cargo.lock
+*.rs.bk
+*.rlib
+*.profdata
+*.pdb
+*.dSYM/
+*.gcda
+*.gcno
+*.gcov
+
+# ====================================
+# PHP
+# ====================================
+
+/vendor/
+.env
+.env.backup
+.phpunit.result.cache
+*.cache
+*.log
+*.sql
+composer.lock
+composer.phar
+*.phar
+.idea/
+phpunit.xml
+
+# ====================================
+# Ruby
+# ====================================
+
+/.bundle/
+/vendor/bundle/
+*.gem
+*.rbc
+.bundle
+Gemfile.lock
+.railsrc
+.rbx
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-*
+tmp/
+log/
+public/assets/
+public/packs/
+public/packs-test/
+
+# ====================================
+# C / C++
+# ====================================
+
+*.obj
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.out
+*.app
+*.gcno
+*.gcda
+*.gcov
+*.dSYM
+*.pdb
+*.ilk
+*.exp
+*.lib
+Debug/
+Release/
+build/
+cmake-build-*
+CMakeCache.txt
+CMakeFiles/
+Makefile
+cmake_install.cmake
+*.cmake
+!CMakeLists.txt
+
+# ====================================
+# Shell / 脚本
+# ====================================
+
+*.sh~
+*.bash~
+*.zsh~
+*.sh.swp
+*.bash.swp
+*.zsh.swp
+
+# ====================================
+# 前端 / 静态资源
+# ====================================
+
+*.css.map
+*.scss.map
+*.sass.map
+*.less.map
+
+# ====================================
+# 数据库 / 数据文件
+# ====================================
+
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-shm
+*.db-wal
+*.mdb
+*.ldb
+*.frm
+*.ibd
+*.myi
+*.myd
+*.sql.gz
+*.sql.zip
+*.dump
+
+# ====================================
+# 日志 / 临时文件
+# ====================================
+
+*.log
+*.log.*
+*.tmp
+*.temp
+*.cache
+*.pid
+*.seed
+*.pid.lock
+logs/
+log/
+tmp/
+temp/
+*.lock
+*.lck
+
+# ====================================
+# Docker / Kubernetes
+# ====================================
+
+*.tar
+*.tar.gz
+*.img
+*.iso
+Dockerfile.*.tmp
+.dockerignore
+*.dockerignore
+kubeconfig
+*.kubeconfig
+.kube/
+.helm/
+charts/*.tgz
+!charts/*.tgz
+
+# ====================================
+# CI/CD / 测试
+# ====================================
+
+coverage/
+.nyc_output/
+.jest-cache/
+.vitest/
+.c8/
+.cypress/
+cypress/videos/
+cypress/screenshots/
+test-results/
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+.ansible/
+.packer_cache/
+*.retry
+
+# ====================================
+# 文档生成
+# ====================================
+
+docs/_build/
+docs/build/
+site/
+apidocs/
+doc/
+*.pdf
+*.epub
+*.mobi
+
+# ====================================
+# 压缩文件
+# ====================================
+
+*.zip
+*.rar
+*.7z
+*.tar
+*.tar.gz
+*.tgz
+*.bz2
+*.xz
+*.iso
+
+# ====================================
+# 备份文件
+# ====================================
+
+*.bak
+*.backup
+*.old
+*.orig
+*.rej
+*.patch
+*.diff
+*.~*
+
+# ====================================
+# 平台 / 云服务
+# ====================================
+
+# AWS
+.aws/
+*.aws/config
+*.aws/credentials
+
+# GCP
+*.gcp/
+*.gcloud/
+*.service-account.json
+
+# Azure
+.azure/
+
+# Firebase
+.firebase/
+*.firebaserc
+
+# Vercel
+.vercel/
+
+# Netlify
+.netlify/
+
+# ====================================
+# 保留的例外（覆盖上面的忽略）
+# ====================================
+
+# 保留示例配置文件
+!.env.example
+!.env.template
+!.env.sample
+!application.properties.example
+!jdbc.properties.example
+!config.example.*
+!*.example.properties
+!*.example.yml
+!*.example.yaml
+!*.sample.properties
+!*.sample.yml
+
+# 保留某些特定目录结构
+!.gitkeep
+!.keep
+!.empty

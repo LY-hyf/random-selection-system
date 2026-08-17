@@ -4,15 +4,14 @@ import com.random.constant.JwtClaimsConstant;
 import com.random.constant.MessageConstant;
 import com.random.constant.StatusConstant;
 import com.random.context.BaseContext;
-import com.random.exception.AccountLockedException;
-import com.random.exception.AccountNotFoundException;
-import com.random.exception.LoginFailedException;
-import com.random.exception.PasswordErrorException;
+import com.random.exception.*;
 import com.random.mapper.permission.SysPermissionMapper;
 import com.random.mapper.role.SysRoleMapper;
 import com.random.mapper.user.SysUserMapper;
+import com.random.mapper.user.SysUserRoleMapper;
 import com.random.pojo.dto.auth.LoginRequest;
 import com.random.pojo.dto.auth.RegisterRequest;
+import com.random.pojo.entity.role.SysRole;
 import com.random.pojo.entity.user.SysUser;
 import com.random.pojo.vo.auth.LoginVO;
 import com.random.pojo.vo.auth.UserInfoVO;
@@ -23,6 +22,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.Collections;
@@ -58,6 +58,8 @@ public class AuthServiceImpl implements AuthService {
     /** JWT 配置属性 */
     @Autowired
     private JwtProperties jwtProperties;
+    @Autowired
+    private SysUserRoleMapper sysUserRoleMapper;
 
     /**
      * 用户登录。
@@ -124,12 +126,14 @@ public class AuthServiceImpl implements AuthService {
      * @param request 注册请求
      */
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void register(RegisterRequest request) {
+        // 1. 校验用户名
         SysUser existing = sysUserMapper.getByUsername(request.getUsername());
         if (existing != null) {
             throw new LoginFailedException("用户名已存在");
         }
-
+        // 2. 创建用户
         SysUser user = new SysUser();
         user.setUsername(request.getUsername());
         user.setPassword(passwordEncoder.encode(request.getPassword()));
@@ -138,9 +142,17 @@ public class AuthServiceImpl implements AuthService {
         user.setStatus(StatusConstant.ENABLE);
         user.setDeleted(0);
         user.setCreateTime(LocalDateTime.now());
-
-        sysUserMapper.insert(user);
-        log.info("注册成功，userId: {}, username: {}", user.getId(), user.getUsername());
+        sysUserMapper.insert(user);  // 需要 @Options(useGeneratedKeys=true)
+        // 3. 查询普通用户角色
+        SysRole userRole = sysRoleMapper.getByRoleCode("USER");
+        if (userRole == null) {
+            log.error("普通用户角色（code=USER）不存在，无法为新用户分配角色");
+            throw new BaseException("系统配置错误，请联系管理员");
+        }
+        // 4. 分配角色（使用单条插入）
+        sysUserRoleMapper.insert(user.getId(), userRole.getId());
+        log.info("注册成功，userId: {}, username: {}, 分配角色: {}",
+                user.getId(), user.getUsername(), userRole.getRoleName());
     }
 
     /**

@@ -35,6 +35,15 @@ public interface SysUserRoleMapper {
     int deleteByUserId(Long userId);
 
     /**
+     * 单条新增用户-角色关联
+     * @param userId
+     * @param roleId
+     * @return
+     */
+    @Insert("INSERT INTO sys_user_role (user_id, role_id, create_time) VALUES (#{userId}, #{roleId}, NOW())")
+    int insert(@Param("userId") Long userId, @Param("roleId") Long roleId);
+
+    /**
      * 批量新增用户-角色关联。
      *
      * @param userId  用户 ID

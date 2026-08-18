@@ -1,5 +1,8 @@
 package com.random.service.impl.expert;
 
+import com.alibaba.excel.EasyExcel;
+import com.alibaba.excel.context.AnalysisContext;
+import com.alibaba.excel.read.listener.ReadListener;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
@@ -7,6 +10,7 @@ import com.github.pagehelper.PageHelper;
 import com.github.pagehelper.PageInfo;
 import com.random.constant.StatusConstant;
 import com.random.context.BaseContext;
+import com.random.dto.expert.ExpertImportRow;
 import com.random.exception.BaseException;
 import com.random.exception.LoginFailedException;
 import com.random.mapper.expert.ExpertExtractRecordMapper;
@@ -26,12 +30,9 @@ import com.random.pojo.vo.expert.ExtractResultVO;
 import com.random.result.PageResult;
 import com.random.service.expert.ExpertService;
 import com.random.utils.ExcelUtil;
-import org.apache.poi.ss.usermodel.Cell;
-import org.apache.poi.ss.usermodel.DateUtil;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
-import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -42,7 +43,6 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -52,6 +52,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
@@ -94,6 +95,9 @@ public class ExpertServiceImpl implements ExpertService {
 
     /** 抽取结果缓存过期时间（分钟） */
     private static final long EXTRACT_CACHE_TTL_MINUTES = 5;
+
+    /** 专家导入批量插入大小 */
+    private static final int IMPORT_BATCH_SIZE = 1000;
 
     /** 抽取锁，用于串行化抽取操作，防止并发重复抽取 */
     private final ReentrantLock extractLock = new ReentrantLock();
@@ -241,15 +245,6 @@ public class ExpertServiceImpl implements ExpertService {
         if (file == null || file.isEmpty()) {
             throw new LoginFailedException("上传文件不能为空");
         }
-        List<ExpertInfo> experts = parseExcel(file);
-
-        // 过滤示例行：name 包含「示例」或「请删除」的行自动跳过，不参与导入
-        int parsedCount = experts.size();
-        experts.removeIf(e -> e.getName() != null
-                && (e.getName().contains("示例") || e.getName().contains("请删除")));
-        if (experts.size() < parsedCount) {
-            log.info("跳过示例行 {} 条", parsedCount - experts.size());
-        }
 
         // 构建 中文标签 -> 编码 的反向映射，兼容全中文 Excel 导入（也兼容已是编码的情况）
         Map<String, String> applyTypeCodeMap = buildDictCodeMap("apply_type");
@@ -257,54 +252,95 @@ public class ExpertServiceImpl implements ExpertService {
         Map<String, String> levelCodeMap = buildDictCodeMap("level");
         Map<String, String> educationCodeMap = buildDictCodeMap("education");
 
-        int totalCount = experts.size();
-        int successCount = 0;
-        List<Map<String, Object>> failDetails = new ArrayList<>();
+        AtomicInteger totalCount = new AtomicInteger(0);
+        AtomicInteger successCount = new AtomicInteger(0);
+        List<Map<String, Object>> failDetails = Collections.synchronizedList(new ArrayList<>());
+        List<ExpertInfo> batch = new ArrayList<>(IMPORT_BATCH_SIZE);
 
-        for (int i = 0; i < experts.size(); i++) {
-            ExpertInfo expert = experts.get(i);
-            // 中文标签统一转编码，保证与「实体存编码」方案一致
-            expert.setApplyType(toCode(expert.getApplyType(), applyTypeCodeMap));
-            expert.setTechnicalType(toCode(expert.getTechnicalType(), technicalTypeCodeMap));
-            expert.setLevel(toCode(expert.getLevel(), levelCodeMap));
-            expert.setEducation(toCode(expert.getEducation(), educationCodeMap));
+        try (InputStream is = file.getInputStream()) {
+            // 流式读取（SAX），逐行处理，内存占用与文件行数无关
+            EasyExcel.read(is, ExpertImportRow.class, new ReadListener<ExpertImportRow>() {
+                @Override
+                public void invoke(ExpertImportRow row, AnalysisContext context) {
+                    // 示例行跳过：name 包含「示例」或「请删除」
+                    if (row.getName() != null
+                            && (row.getName().contains("示例") || row.getName().contains("请删除"))) {
+                        return;
+                    }
+                    totalCount.incrementAndGet();
 
-            int rowNum = i + 2; // 数据从第 2 行开始（第 1 行为表头）
-            String reason = validateExpert(expert);
-            if (reason != null) {
-                Map<String, Object> fail = new HashMap<>();
-                fail.put("row", rowNum);
-                fail.put("name", expert.getName());
-                fail.put("reason", reason);
-                failDetails.add(fail);
-                continue;
-            }
-            expert.setStatus(StatusConstant.ENABLE);
-            expert.setDeleted(0);
-            expert.setCreateTime(LocalDateTime.now());
-            expertInfoMapper.insert(expert);
-            successCount++;
+                    ExpertInfo expert = new ExpertInfo();
+                    expert.setName(row.getName());
+                    expert.setBirthday(parseDate(row.getBirthday()));
+                    expert.setEducation(toCode(row.getEducation(), educationCodeMap));
+                    expert.setCompany(row.getCompany());
+                    expert.setApplyType(toCode(row.getApplyType(), applyTypeCodeMap));
+                    expert.setTechnicalType(toCode(row.getTechnicalType(), technicalTypeCodeMap));
+                    expert.setLevel(toCode(row.getLevel(), levelCodeMap));
+                    expert.setPhone(row.getPhone());
+
+                    int rowNum = context.readRowHolder().getRowIndex() + 1;
+                    String reason = validateExpert(expert);
+                    if (reason != null) {
+                        Map<String, Object> fail = new HashMap<>();
+                        fail.put("row", rowNum);
+                        fail.put("name", expert.getName());
+                        fail.put("reason", reason);
+                        failDetails.add(fail);
+                        return;
+                    }
+
+                    expert.setStatus(StatusConstant.ENABLE);
+                    expert.setDeleted(0);
+                    expert.setCreateTime(LocalDateTime.now());
+                    batch.add(expert);
+                    if (batch.size() >= IMPORT_BATCH_SIZE) {
+                        successCount.addAndGet(flushImportBatch(batch));
+                    }
+                }
+
+                @Override
+                public void doAfterAllAnalysed(AnalysisContext context) {
+                    // flush 最后一批
+                    successCount.addAndGet(flushImportBatch(batch));
+                }
+            }).sheet().doRead();
+        } catch (IOException e) {
+            throw new LoginFailedException("文件解析失败，请上传正确的 Excel 文件");
         }
 
         ExpertImportRecord record = new ExpertImportRecord();
         record.setFileName(file.getOriginalFilename());
-        record.setTotalCount(totalCount);
-        record.setSuccessCount(successCount);
-        record.setFailCount(totalCount - successCount);
+        record.setTotalCount(totalCount.get());
+        record.setSuccessCount(successCount.get());
+        record.setFailCount(totalCount.get() - successCount.get());
         record.setUserId(BaseContext.getCurrentId());
         record.setCreateTime(LocalDateTime.now());
         expertImportRecordMapper.insert(record);
 
         Map<String, Object> result = new HashMap<>();
-        result.put("totalCount", totalCount);
-        result.put("successCount", successCount);
-        result.put("failCount", totalCount - successCount);
+        result.put("totalCount", totalCount.get());
+        result.put("successCount", successCount.get());
+        result.put("failCount", totalCount.get() - successCount.get());
         result.put("recordId", record.getId());
         result.put("failDetails", failDetails);
 
         log.info("专家导入完成，文件: {}, 总数: {}, 成功: {}, 失败: {}",
-                file.getOriginalFilename(), totalCount, successCount, totalCount - successCount);
+                file.getOriginalFilename(), totalCount.get(), successCount.get(),
+                totalCount.get() - successCount.get());
         return result;
+    }
+
+    /**
+     * 批量插入缓冲区的专家，返回插入条数。
+     */
+    private int flushImportBatch(List<ExpertInfo> batch) {
+        int count = batch.size();
+        if (count > 0) {
+            expertInfoMapper.insertBatch(batch);
+            batch.clear();
+        }
+        return count;
     }
 
     /**
@@ -374,40 +410,49 @@ public class ExpertServiceImpl implements ExpertService {
      */
     @Override
     public ExtractResultVO extract(ExtractRequest request) {
+        // 获取当前登录用户ID（从线程上下文ThreadLocal中获取）
         Long userId = BaseContext.getCurrentId();
+        // 构建缓存键，由“用户ID:申请类型:技术类型:级别”组成，确保不同条件组合的缓存隔离
         String cacheKey = userId + ":" + request.getApplyType() + ":" + request.getTechnicalType() + ":" + request.getLevel();
-
-        // 先查缓存（无锁快速路径），命中则直接返回
+        // ---- 第一阶段：无锁快速路径 ----
+        // 先尝试从缓存中获取结果，若命中则直接返回（注意返回副本，避免缓存对象被修改）
         ExtractResultVO cached = getCached(cacheKey);
         if (cached != null) {
             log.info("抽取命中缓存，batchNo: {}", cached.getBatchNo());
+            // 返回缓存数据的副本（深拷贝或浅拷贝视具体实现，此处方法名暗示返回不可变副本）
             return copyAsFromCache(cached);
         }
-
-        // 加锁，防止并发重复抽取同一批专家
+        // ---- 第二阶段：加锁防止并发重复抽取 ----
+        // 使用可重入锁（ReentrantLock）保证同一时刻只有一个线程执行抽取逻辑，避免为相同条件生成多批次数据
         extractLock.lock();
         try {
-            // 双重检查：拿到锁后可能已被其他线程抽取并写入缓存
+            // 双重检查（Double-Check）：获取锁后再次查询缓存，防止在等待锁期间其他线程已完成抽取并写入缓存
             cached = getCached(cacheKey);
             if (cached != null) {
                 log.info("抽取命中缓存（并发等待后），batchNo: {}", cached.getBatchNo());
                 return copyAsFromCache(cached);
             }
-
+            // ---- 第三阶段：数据库查询与随机筛选 ----
+            // 根据申请类型、技术类型、级别从数据库查询所有可抽取的专家（未被禁用或满足业务条件）
             List<ExpertInfo> experts = expertInfoMapper.getExtractableExperts(
                     request.getApplyType(), request.getTechnicalType(), request.getLevel());
+            // 若无可抽取专家，抛出业务异常
             if (experts == null || experts.isEmpty()) {
                 throw new BaseException("没有符合条件的专家");
             }
-
+            // 随机打乱专家列表，实现抽取的随机性（公平性）
             Collections.shuffle(experts);
+            // 确定实际抽取数量：默认为5，但限制在1~20之间，且不能超过专家总数
             int requestCount = request.getCount() == null || request.getCount() < 1 ? 5 : request.getCount();
             requestCount = Math.min(requestCount, 20);
             int count = Math.min(experts.size(), requestCount);
+            // 截取前 count 个专家作为本次抽取结果
             List<ExpertInfo> selected = new ArrayList<>(experts.subList(0, count));
-
+            // ---- 第四阶段：生成批次号并持久化抽取记录 ----
+            // 批次号格式：EX-年月日时分秒（精确到秒），用于标识本次抽取的批次
             String batchNo = "EX-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
             LocalDateTime now = LocalDateTime.now();
+            // 遍历选中的专家，构建抽取记录并插入数据库（记录用户、批次、专家、抽取时间等信息）
             for (ExpertInfo expert : selected) {
                 ExpertExtractRecord record = new ExpertExtractRecord();
                 record.setBatchNo(batchNo);
@@ -420,28 +465,43 @@ public class ExpertServiceImpl implements ExpertService {
                 record.setCreateTime(now);
                 expertExtractRecordMapper.insert(record);
             }
-
+            // ---- 第五阶段：构建字典标签映射（用于将编码转换为可读名称） ----
+            // 分别获取申请类型、技术类型、级别的字典映射（如 "01" -> "初级"）
             Map<String, String> applyTypeMap = buildDictLabelMap("apply_type");
             Map<String, String> technicalTypeMap = buildDictLabelMap("technical_type");
             Map<String, String> levelMap = buildDictLabelMap("level");
-
+            // ---- 第六阶段：组装返回结果对象 ----
             ExtractResultVO result = new ExtractResultVO();
             result.setBatchNo(batchNo);
             result.setExtractTime(now);
-            result.setIsFromCache(false);
+            result.setIsFromCache(false); // 本次为实时抽取，非缓存结果
+            // 将专家实体转换为前端展示用的VO，并填充字典标签
             result.setExperts(selected.stream()
                     .map(e -> toExtractExpertVO(e, applyTypeMap, technicalTypeMap, levelMap))
                     .collect(Collectors.toList()));
-
+            // ---- 第七阶段：缓存结果 ----
+            // 将本次抽取结果放入缓存，后续相同条件的请求可直接复用（默认有过期时间，避免数据陈旧）
             putCache(cacheKey, result);
             log.info("抽取完成，batchNo: {}, 抽取人数: {}, 条件: applyType={}, technicalType={}, level={}",
                     batchNo, selected.size(), request.getApplyType(), request.getTechnicalType(), request.getLevel());
             return result;
         } finally {
+            // 确保锁在任何情况下（包括异常）都能被释放，避免死锁
             extractLock.unlock();
         }
     }
 
+    /**
+     * 创建缓存结果对象的副本，并将其标记为来自缓存。
+     * <p>
+     * 该方法用于从缓存中获取结果后，生成一个新的 {@link ExtractResultVO} 实例，
+     * 避免直接暴露缓存对象，防止外部修改影响缓存数据。复制时仅复制基本字段和引用，
+     * 属于浅拷贝（专家列表仍引用原对象，但本业务场景下专家列表不会在返回后被修改）。
+     *
+     * @param cached 从缓存中获取的原始结果对象，不得为 {@code null}
+     * @return 一个新的 {@link ExtractResultVO} 对象，其字段值与缓存对象一致，
+     *         且 {@code isFromCache} 属性被设置为 {@code true}
+     */
     private ExtractResultVO copyAsFromCache(ExtractResultVO cached) {
         ExtractResultVO result = new ExtractResultVO();
         result.setBatchNo(cached.getBatchNo());
@@ -494,6 +554,18 @@ public class ExpertServiceImpl implements ExpertService {
         }
     }
 
+    /**
+     * 将专家实体转换为前端展示用的视图对象，并填充对应的字典标签（如类型名称、级别名称）。
+     * <p>
+     * 该方法用于将数据库查询得到的专家信息（编码形式）转换为前端需要的展示对象，
+     * 通过传入的字典映射将编码转换为可读的中文标签，方便前端直接展示。
+     *
+     * @param expert            专家实体对象，包含编码字段（申请类型、技术类型、级别等）
+     * @param applyTypeMap      申请类型字典映射，key为编码，value为标签名称
+     * @param technicalTypeMap  技术类型字典映射，key为编码，value为标签名称
+     * @param levelMap          级别字典映射，key为编码，value为标签名称
+     * @return 填充了标签的 {@link ExtractExpertVO} 视图对象，包含专家所有展示字段及对应标签
+     */
     private ExtractExpertVO toExtractExpertVO(ExpertInfo expert, Map<String, String> applyTypeMap,
                                               Map<String, String> technicalTypeMap, Map<String, String> levelMap) {
         ExtractExpertVO vo = new ExtractExpertVO();
@@ -650,59 +722,6 @@ public class ExpertServiceImpl implements ExpertService {
             return "级别不能为空";
         }
         return null;
-    }
-
-    /**
-     * 解析 Excel 文件为专家列表。
-     */
-    private List<ExpertInfo> parseExcel(MultipartFile file) {
-        List<ExpertInfo> list = new ArrayList<>();
-        try (InputStream is = file.getInputStream(); Workbook workbook = WorkbookFactory.create(is)) {
-            Sheet sheet = workbook.getSheetAt(0);
-            for (int i = 1; i <= sheet.getLastRowNum(); i++) {
-                Row row = sheet.getRow(i);
-                if (row == null) {
-                    continue;
-                }
-                ExpertInfo expert = new ExpertInfo();
-                expert.setName(getCellValue(row.getCell(0)));
-                expert.setBirthday(parseDate(getCellValue(row.getCell(1))));
-                expert.setEducation(getCellValue(row.getCell(2)));
-                expert.setCompany(getCellValue(row.getCell(3)));
-                expert.setApplyType(getCellValue(row.getCell(4)));
-                expert.setTechnicalType(getCellValue(row.getCell(5)));
-                expert.setLevel(getCellValue(row.getCell(6)));
-                expert.setPhone(getCellValue(row.getCell(7)));
-                list.add(expert);
-            }
-        } catch (Exception e) {
-            throw new LoginFailedException("文件解析失败，请上传正确的 Excel 文件");
-        }
-        return list;
-    }
-
-    /**
-     * 获取单元格字符串值，兼容日期与数字类型。
-     */
-    private String getCellValue(Cell cell) {
-        if (cell == null) {
-            return null;
-        }
-        switch (cell.getCellType()) {
-            case STRING:
-                return cell.getStringCellValue();
-            case NUMERIC:
-                if (DateUtil.isCellDateFormatted(cell)) {
-                    return cell.getLocalDateTimeCellValue().toLocalDate().toString();
-                }
-                return new BigDecimal(cell.getNumericCellValue()).toPlainString();
-            case BOOLEAN:
-                return String.valueOf(cell.getBooleanCellValue());
-            case FORMULA:
-                return cell.getCellFormula();
-            default:
-                return null;
-        }
     }
 
     /**

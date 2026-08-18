@@ -3,6 +3,7 @@ package com.random.pojo.dto.auth;
 import lombok.Data;
 
 import javax.validation.constraints.NotBlank;
+import javax.validation.constraints.Size;
 
 /**
  * 用户登录请求数据传输对象（DTO）。

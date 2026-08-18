@@ -64,54 +64,73 @@ public class AuthServiceImpl implements AuthService {
     /**
      * 用户登录。
      *
-     * <p>依次校验账号是否存在、密码是否正确、账号是否可用，
-     * 校验通过后生成 JWT Token 并组装用户信息与权限返回。</p>
+     * <p>登录流程如下：</p>
+     * <ol>
+     *   <li>根据用户名查询用户信息，若不存在则抛出账号不存在异常；</li>
+     *   <li>校验密码是否匹配，不匹配则抛出密码错误异常；</li>
+     *   <li>检查账号状态，若被禁用则抛出账号锁定异常；</li>
+     *   <li>生成包含用户ID和用户名的 JWT Token；</li>
+     *   <li>查询当前用户拥有的所有角色编码和权限编码（用于前端动态路由和按钮级权限控制）；</li>
+     *   <li>组装返回登录成功信息（Token + 用户基本信息 + 角色 + 权限）。</li>
+     * </ol>
      *
-     * @param request 登录请求
-     * @return 登录结果，包含 JWT Token 与用户信息
+     * @param request 登录请求，包含用户名和密码
+     * @return 登录成功后的视图对象，包含 JWT Token 和用户详细信息
+     * @throws AccountNotFoundException 账号不存在时抛出
+     * @throws PasswordErrorException   密码错误时抛出
+     * @throws AccountLockedException   账号被禁用时抛出
      */
     @Override
     public LoginVO login(LoginRequest request) {
+        // 1. 提取用户名和密码
         String username = request.getUsername();
         String password = request.getPassword();
-
+        // 2. 根据用户名查询用户信息（含密码密文、状态等）
         SysUser user = sysUserMapper.getByUsername(username);
         if (user == null) {
+            // 若用户不存在，直接抛出异常，由全局异常处理器返回友好提示
             throw new AccountNotFoundException(MessageConstant.ACCOUNT_NOT_FOUND);
         }
-
+        // 3. 密码校验：使用 BCrypt 密码编码器比对明文和密文
         if (!passwordEncoder.matches(password, user.getPassword())) {
             throw new PasswordErrorException(MessageConstant.PASSWORD_ERROR);
         }
-
+        // 4. 账号状态校验：如果状态为禁用（0），不允许登录
         if (StatusConstant.DISABLE.equals(user.getStatus())) {
             throw new AccountLockedException(MessageConstant.ACCOUNT_LOCKED);
         }
-
+        // 5. 构建 JWT 的载荷（Payload）信息
         Map<String, Object> claims = new HashMap<>();
-        claims.put(JwtClaimsConstant.USER_ID, user.getId());
-        claims.put(JwtClaimsConstant.USERNAME, user.getUsername());
-        String token = JwtUtil.createJWT(jwtProperties.getAdminSecretKey(), jwtProperties.getAdminTtl(), claims);
-
+        claims.put(JwtClaimsConstant.USER_ID, user.getId());   // 用户ID
+        claims.put(JwtClaimsConstant.USERNAME, user.getUsername()); // 用户名
+        // 6. 使用 JwtUtil 工具类生成 Token（包含过期时间、密钥等）
+        String token = JwtUtil.createJWT(
+                jwtProperties.getAdminSecretKey(),  // 签名密钥
+                jwtProperties.getAdminTtl(),        // Token 有效期（毫秒）
+                claims
+        );
+        // 7. 查询当前用户拥有的所有角色编码（如 "ADMIN", "USER"）
         List<String> roles = sysRoleMapper.getRoleCodesByUserId(user.getId());
         if (roles == null) {
-            roles = Collections.emptyList();
+            roles = Collections.emptyList(); // 防止空指针
         }
+        // 8. 查询当前用户拥有的所有权限编码（如 "expert:add:submit"）
         List<String> permissions = sysPermissionMapper.getPermissionCodesByUserId(user.getId());
         if (permissions == null) {
             permissions = Collections.emptyList();
         }
-
+        // 9. 组装用户信息视图对象（用于前端展示和权限渲染）
         UserInfoVO userInfo = UserInfoVO.builder()
                 .id(user.getId())
                 .username(user.getUsername())
                 .nickname(user.getNickname())
                 .phone(user.getPhone())
-                .roles(roles)
-                .permissions(permissions)
+                .roles(roles)               // 角色列表
+                .permissions(permissions)   // 权限列表
                 .build();
-
+        // 10. 记录登录成功日志（便于审计和排查）
         log.info("登录成功，userId: {}, username: {}, roles: {}", user.getId(), user.getUsername(), roles);
+        // 11. 返回最终登录结果（Token + 用户信息）
         return LoginVO.builder()
                 .token(token)
                 .userInfo(userInfo)

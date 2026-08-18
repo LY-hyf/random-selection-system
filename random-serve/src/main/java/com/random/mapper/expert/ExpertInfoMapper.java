@@ -56,6 +56,22 @@ public interface ExpertInfoMapper {
     int insert(ExpertInfo expert);
 
     /**
+     * 批量新增专家（用于大文件流式导入）。
+     *
+     * @param experts 专家实体列表
+     * @return 受影响的行数
+     */
+    @Insert("<script>" +
+            "insert into expert_info (name, birthday, education, company, apply_type, technical_type, " +
+            "level, phone, status, deleted, create_time) values " +
+            "<foreach collection='list' item='e' separator=','>" +
+            "(#{e.name}, #{e.birthday}, #{e.education}, #{e.company}, #{e.applyType}, #{e.technicalType}, " +
+            "#{e.level}, #{e.phone}, #{e.status}, #{e.deleted}, #{e.createTime})" +
+            "</foreach>" +
+            "</script>")
+    int insertBatch(@Param("list") List<ExpertInfo> experts);
+
+    /**
      * 更新专家非空字段。
      *
      * @param expert 专家实体，仅需设置 id 及待更新字段

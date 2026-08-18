@@ -8,8 +8,10 @@ import com.random.exception.PasswordErrorException;
 import com.random.mapper.permission.SysPermissionMapper;
 import com.random.mapper.role.SysRoleMapper;
 import com.random.mapper.user.SysUserMapper;
+import com.random.mapper.user.SysUserRoleMapper;
 import com.random.pojo.dto.auth.LoginRequest;
 import com.random.pojo.dto.auth.RegisterRequest;
+import com.random.pojo.entity.role.SysRole;
 import com.random.pojo.entity.user.SysUser;
 import com.random.pojo.vo.auth.LoginVO;
 import com.random.pojo.vo.auth.UserInfoVO;
@@ -38,6 +40,9 @@ class AuthServiceImplTest {
 
     @Mock
     private SysRoleMapper sysRoleMapper;
+
+    @Mock
+    private SysUserRoleMapper sysUserRoleMapper;
 
     @Mock
     private SysPermissionMapper sysPermissionMapper;
@@ -104,6 +109,7 @@ class AuthServiceImplTest {
     void register_成功插入用户() {
         when(sysUserMapper.getByUsername("newuser")).thenReturn(null);
         when(passwordEncoder.encode("123456")).thenReturn("encoded");
+        when(sysRoleMapper.getByRoleCode("USER")).thenReturn(userRole());
 
         authService.register(registerRequest("newuser"));
 
@@ -137,6 +143,14 @@ class AuthServiceImplTest {
         u.setPhone("13800000001");
         u.setStatus(status);
         return u;
+    }
+
+    private SysRole userRole() {
+        SysRole role = new SysRole();
+        role.setId(2L);
+        role.setRoleName("普通用户");
+        role.setRoleCode("USER");
+        return role;
     }
 
     private LoginRequest loginRequest() {

@@ -24,6 +24,7 @@ public class RegisterRequest {
 
     /** 昵称 */
     @NotBlank(message = "昵称不能为空")
+    @Size(min = 6, max = 20, message = "密码长度需在6-20位之间")
     private String nickname;
 
     /** 手机号 */

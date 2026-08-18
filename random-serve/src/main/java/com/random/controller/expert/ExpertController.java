@@ -87,6 +87,7 @@ public class ExpertController {
      * @return 抽取结果
      */
     @Log(module = "专家管理", operation = "随机抽取专家")
+    // 方法级权限控制,在请求执行前判断当前登录用户是否拥有指定的权限字符串
     @PreAuthorize("hasAuthority('expert:extract')")
     @PostMapping("/extract")
     public Result<ExtractResultVO> extract(@RequestBody ExtractRequest request) {
@@ -113,11 +114,12 @@ public class ExpertController {
 
     /**
      * 新增专家。
-     *
+     * @@Pattern（新增到 ExpertInfo.phone）+ @Valid 挂到 ExpertController
      * @param expert 专家实体
      * @return 新增结果
      */
     @Log(module = "专家管理", operation = "新增专家")
+    // 方法级权限控制,在请求执行前判断当前登录用户是否拥有指定的权限字符串。
     @PreAuthorize("hasAuthority('expert:add:submit')")
     @PostMapping
     public Result add(@Valid @RequestBody ExpertInfo expert) {

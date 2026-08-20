@@ -40,6 +40,7 @@ public interface ExpertService {
      * @param request 分页及筛选条件
      * @return 抽取历史分页结果
      */
+    // TODO 功能待实现，目前无用
     PageResult<Map<String, Object>> extractHistory(ExtractHistoryPageRequest request);
 
     /**

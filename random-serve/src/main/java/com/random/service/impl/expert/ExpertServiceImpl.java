@@ -111,7 +111,7 @@ public class ExpertServiceImpl implements ExpertService {
     /**
      * 分页查询专家。
      *
-     * <p>查询专家分页数据，并填充各字典编码对应的中文标签及最近抽取状态。</p>
+     * <p>查询专家分页数据，并填充各字典编码对应的中文标签，最近抽取状态</p>
      *
      * @param request 分页及筛选条件
      * @return 专家分页结果
@@ -129,6 +129,7 @@ public class ExpertServiceImpl implements ExpertService {
             Map<String, String> technicalTypeLabelMap = buildDictLabelMap("technical_type");
             Map<String, String> levelLabelMap = buildDictLabelMap("level");
             Map<String, String> educationLabelMap = buildDictLabelMap("education");
+            // buildLastExtractTimeMap 构建专家 ID 到最近抽取时间的map集合映射（批量查询填充器）。
             Map<Long, LocalDateTime> lastExtractTimeMap = buildLastExtractTimeMap(
                     experts.stream().map(ExpertInfo::getId).collect(Collectors.toList()));
 
@@ -150,6 +151,7 @@ public class ExpertServiceImpl implements ExpertService {
                 vo.setStatus(expert.getStatus());
                 LocalDateTime lastExtractTime = lastExtractTimeMap.get(expert.getId());
                 vo.setLastExtractTime(lastExtractTime);
+                // 查询专家抽取状态
                 vo.setExtractStatus(computeExtractStatus(lastExtractTime));
                 records.add(vo);
             }
@@ -172,16 +174,25 @@ public class ExpertServiceImpl implements ExpertService {
     }
 
     /**
-     * 分页查询抽取历史。
+     * 分页查询抽取历史记录。
      *
-     * @param request 分页及筛选条件
-     * @return 抽取历史分页结果
+     * <p>该方法支持按条件分页检索专家的抽取历史，包括批次号、抽取时间、操作人等信息。
+     * 查询结果不包含具体专家详情，仅展示抽取记录概览，适用于前端历史列表展示。</p>
+     *
+     * @param request 分页及筛选条件（包含页码、每页条数、批次号、时间范围等）
+     * @return 抽取历史分页结果，包含总记录数及当前页数据
      */
     @Override
     public PageResult<Map<String, Object>> extractHistory(ExtractHistoryPageRequest request) {
+        // 开启分页（PageHelper 会自动拦截后续 SQL）
         PageHelper.startPage(request.getPageNum(), request.getPageSize());
+        // 执行查询，返回 List<Map>（每行记录包含 batchNo、expertName、extractTime 等字段）
         List<Map<String, Object>> list = expertExtractRecordMapper.pageQuery(request);
+        // 封装分页信息
         PageInfo<Map<String, Object>> pageInfo = new PageInfo<>(list);
+        // 记录操作日志（INFO 级别），便于追踪查询行为和性能
+        log.info("抽取历史查询完成，pageNum: {}, pageSize: {}, 总记录数: {}",
+                request.getPageNum(), request.getPageSize(), pageInfo.getTotal());
         return new PageResult<>(pageInfo.getTotal(), pageInfo.getList());
     }
 
@@ -296,8 +307,9 @@ public class ExpertServiceImpl implements ExpertService {
                     totalCount.incrementAndGet();
                     // 4.1.2 创建专家实体，将 Excel 字段转换为数据库字段
                     ExpertInfo expert = new ExpertInfo();
-                    expert.setName(row.getName());                                   // 姓名
-                    expert.setBirthday(parseDate(row.getBirthday()));               // 出生日期（解析为 LocalDate）
+                    expert.setName(row.getName());// 姓名
+                    // parseDate // 出生日期（解析为 LocalDate）
+                    expert.setBirthday(parseDate(row.getBirthday()));
                     expert.setEducation(toCode(row.getEducation(), educationCodeMap)); // 学历（中文→编码）
                     expert.setCompany(row.getCompany());                            // 工作单位
                     expert.setApplyType(toCode(row.getApplyType(), applyTypeCodeMap)); // 申报类型
@@ -448,7 +460,7 @@ public class ExpertServiceImpl implements ExpertService {
     public ExtractResultVO extract(ExtractRequest request) {
         // 获取当前登录用户ID（从线程上下文ThreadLocal中获取）
         Long userId = BaseContext.getCurrentId();
-        // 构建缓存键，由“用户ID:申请类型:技术类型:级别”组成，确保不同条件组合的缓存隔离
+        // 构建缓存键，由“用户ID:申请类型:技术类型:级别”组成，确保不同条件组合的缓存隔离,确保每个用户5分钟缓存隔离
         String cacheKey = userId + ":" + request.getApplyType() + ":" + request.getTechnicalType() + ":" + request.getLevel();
         // ---- 第一阶段：无锁快速路径 ----
         // 先尝试从缓存中获取结果，若命中则直接返回（注意返回副本，避免缓存对象被修改）
@@ -469,7 +481,10 @@ public class ExpertServiceImpl implements ExpertService {
                 return copyAsFromCache(cached);
             }
             // ---- 第三阶段：数据库查询与随机筛选 ----
-            // 根据申请类型、技术类型、级别从数据库查询所有可抽取的专家（未被禁用或满足业务条件）
+            /**
+             * 根据申请类型、技术类型、级别从数据库查询所有可抽取的专家（未被禁用或满足业务条件）
+             * 数据查询层expertInfoMapper.getExtractableExperts 查询专家与expert_extract_record的专家id和抽取时间有关，与userId无关
+             */
             List<ExpertInfo> experts = expertInfoMapper.getExtractableExperts(
                     request.getApplyType(), request.getTechnicalType(), request.getLevel());
             // 若无可抽取专家，抛出业务异常
@@ -488,6 +503,7 @@ public class ExpertServiceImpl implements ExpertService {
             // 批次号格式：EX-年月日时分秒（精确到秒），用于标识本次抽取的批次
             String batchNo = "EX-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
             LocalDateTime now = LocalDateTime.now();
+
             // 遍历选中的专家，构建抽取记录并插入数据库（记录用户、批次、专家、抽取时间等信息）
             for (ExpertInfo expert : selected) {
                 ExpertExtractRecord record = new ExpertExtractRecord();
@@ -554,6 +570,7 @@ public class ExpertServiceImpl implements ExpertService {
         // L1：本地缓存
         ExtractResultVO local = localCache.getIfPresent(cacheKey);
         if (local != null) {
+            log.info("本地缓存读取成功，key: {}", EXTRACT_CACHE_PREFIX + cacheKey);
             return local;
         }
         // L2：Redis
@@ -568,7 +585,7 @@ public class ExpertServiceImpl implements ExpertService {
             return result;
         } catch (Exception e) {
             // Redis 读取或反序列化失败，降级为仅本地缓存未命中
-            log.warn("Redis 读取抽取缓存失败，降级为未命中，key: {}", EXTRACT_CACHE_PREFIX + cacheKey, e);
+            log.warn("Redis 读取缓存失败，降级为未命中，key: {}", EXTRACT_CACHE_PREFIX + cacheKey, e);
             return null;
         }
     }
@@ -579,14 +596,16 @@ public class ExpertServiceImpl implements ExpertService {
     private void putCache(String cacheKey, ExtractResultVO result) {
         // L1：本地缓存（必定成功）
         localCache.put(cacheKey, result);
+        log.info("本地缓存写入成功，key: {}", EXTRACT_CACHE_PREFIX + cacheKey);
         // L2：Redis
         try {
             String json = objectMapper.writeValueAsString(result);
             stringRedisTemplate.opsForValue().set(EXTRACT_CACHE_PREFIX + cacheKey, json,
                     EXTRACT_CACHE_TTL_MINUTES, TimeUnit.MINUTES);
+            log.info("Redis 写入缓存成功，key: {}",EXTRACT_CACHE_PREFIX + cacheKey);
         } catch (Exception e) {
             // Redis 写入失败仅影响分布式缓存，本地缓存仍生效
-            log.warn("Redis 写入抽取缓存失败，仅本地缓存生效，key: {}", EXTRACT_CACHE_PREFIX + cacheKey, e);
+            log.warn("Redis 写入缓存失败，仅本地缓存生效，key: {}", EXTRACT_CACHE_PREFIX + cacheKey, e);
         }
     }
 
@@ -690,24 +709,56 @@ public class ExpertServiceImpl implements ExpertService {
     }
 
     /**
-     * 构建专家 ID 到最近抽取时间的映射。
+     * 构建专家 ID 到最近抽取时间的映射（批量查询填充器）。
+     *
+     * <p><b>业务目的：</b></p>
+     * 在分页查询专家列表（`page` 方法）时，前端需要展示每个专家当前是“已抽取”还是“未抽取”状态。
+     * 该状态依赖于该专家最近一次被抽取的时间是否在 30 天内。
+     * 此方法用于批量获取这些时间数据，避免逐条查询数据库。
+     *
+     * <p><b>性能优化（防 N+1 查询）：</b></p>
+     * 如果分页返回 10 条专家数据，循环调用 10 次 SQL 去查抽取时间会严重拖慢响应。
+     * 该方法利用 SQL 的 `IN` 查询，一次性批量查出所有专家的最近抽取时间，
+     * 将 10 次网络 IO 降为 1 次，极大提升列表页加载速度。
+     *
+     * @param expertIds 当前分页中所有的专家 ID 列表（调用方传入，不会为 null）
+     * @return Map<专家ID, 最近一次抽取时间>。若无抽取记录，则 Map 中不包含该 ID
      */
     private Map<Long, LocalDateTime> buildLastExtractTimeMap(List<Long> expertIds) {
         Map<Long, LocalDateTime> map = new HashMap<>();
+
+        // 防御性判断：如果列表为空，直接返回空 Map，避免无效的数据库查询
+        if (expertIds == null || expertIds.isEmpty()) {
+            return map;
+        }
+
+        // 1. 批量查询：调用 Mapper 层，SQL 大致逻辑为：
+        //    SELECT expert_id, MAX(extract_time) as lastExtractTime
+        //    FROM expert_extract_record
+        //    WHERE expert_id IN (?, ?, ...)
+        //    GROUP BY expert_id
         List<Map<String, Object>> rows = expertExtractRecordMapper.getLastExtractTimeByExpertIds(expertIds);
+
         if (rows != null) {
             for (Map<String, Object> row : rows) {
+                // 2. 提取专家 ID（MyBatis 可能返回 Integer 或 Long，用 Number 接口统一接收）
                 Object idObj = row.get("expertId");
                 if (idObj == null) {
-                    continue;
+                    continue; // 数据异常行跳过
                 }
+                // 安全转换为 Long（如果是 Integer 也能自动转）
                 Long expertId = ((Number) idObj).longValue();
+
+                // 3. 转换时间（统一转为 LocalDateTime）
+                //    兼容数据库返回的 java.sql.Timestamp、java.util.Date 等类型
                 LocalDateTime time = toLocalDateTime(row.get("lastExtractTime"));
                 if (time != null) {
                     map.put(expertId, time);
                 }
             }
         }
+
+        // 4. 返回映射关系，供上层计算 "已抽取/未抽取" 状态
         return map;
     }
 
@@ -732,7 +783,7 @@ public class ExpertServiceImpl implements ExpertService {
     }
 
     /**
-     * 根据最近一次抽取时间计算当前抽取状态。
+     * 业务展示层，根据最近一次抽取时间计算当前抽取状态，并通过分页查询方法展示到前端。
      * <p>
      * 业务规则：若最近抽取时间在距今 30 天以内（包含当天），则认为当前处于“已抽取”状态；
      * 否则视为“未抽取”。该方法主要用于前端展示或业务逻辑判断，如控制抽取按钮的可操作性。

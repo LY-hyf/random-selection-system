@@ -13,7 +13,6 @@ import javax.validation.constraints.Size;
 public class RegisterRequest {
 
     /** 用户名 */
-    // TODO 正则表达式校验
     @NotBlank(message = "用户名不能为空")
     @Size(min = 3, max = 20, message = "用户名长度需在3-20位之间")
     private String username;

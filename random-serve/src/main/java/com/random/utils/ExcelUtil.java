@@ -15,12 +15,18 @@ import java.util.List;
 public class ExcelUtil {
 
     /**
-     * 生成一个简单的 Excel 文件字节数组。
+     * 生成一个简单的 Excel 工作簿（.xlsx 格式）并输出为字节数组。
+     * <p>
+     * 该方法使用 Apache POI 的 {@link XSSFWorkbook} 创建 Excel 文件，适用于中小规模数据导出。
+     * 表头为第一行，后续每行数据按顺序填充。所有单元格内容均转为字符串形式。
+     * 生成的 Excel 不包含任何样式（如边框、颜色、列宽自动调整），如需复杂格式请另行扩展。
      *
-     * @param sheetName 工作表名称
-     * @param headers   表头
-     * @param rows      数据行（每行为一列字符串集合）
-     * @return Excel 文件字节数组
+     * @param sheetName 工作表名称，不能为 {@code null} 或空字符串
+     * @param headers   表头数组，按顺序对应各列标题，不能为 {@code null}
+     * @param rows      数据行列表，每行为一个字符串列表，代表该行的各列值；
+     *                  若某一列值为 {@code null}，则写入空字符串
+     * @return Excel 文件的字节数组，可直接用于输出到响应流或保存为文件
+     * @throws RuntimeException 当 IO 异常或生成过程中发生错误时抛出（包装为运行时异常）
      */
     public static byte[] create(String sheetName, String[] headers, List<List<String>> rows) {
         try (Workbook workbook = new XSSFWorkbook();
@@ -44,5 +50,4 @@ public class ExcelUtil {
             throw new RuntimeException("Excel生成失败", e);
         }
     }
-
 }

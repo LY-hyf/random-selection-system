@@ -127,7 +127,6 @@ public class DashboardServiceImpl implements DashboardService {
                 expertsByBatch.computeIfAbsent(batchNo, k -> new ArrayList<>()).add(row);
             }
         }
-
         for (Map<String, Object> batch : batches) {
             String batchNo = (String) batch.get("batchNo");
             batch.put("experts", expertsByBatch.getOrDefault(batchNo, new ArrayList<>()));
@@ -137,9 +136,15 @@ public class DashboardServiceImpl implements DashboardService {
 
     /**
      * 导出抽取记录为 Excel 字节数组。
+     * <p>
+     * 根据传入的批次号列表导出对应的抽取记录；若批次号列表为空，则默认导出最近 10 条抽取记录。
+     * 导出的 Excel 包含批次号、专家姓名、操作人、抽取时间四列，数据来源于统计看板（Dashboard）数据访问层。
      *
-     * @param batchNos 要导出的批次号集合，为空则导出最近记录
-     * @return Excel 文件字节数组
+     * @param batchNos 要导出的批次号集合；允许为空，为空时自动导出最近 10 条记录。
+     *                 若不为空，则只导出这些批次号对应的记录，忽略不存在或无效的批次号。
+     * @return Excel 文件的字节数组，可直接用于下载或响应流输出；若查询无数据，则返回仅含表头的空 Excel 文件。
+     * @implNote 该方法调用 {@link ExcelUtil#create(String, String[], List)} 生成 Excel 工作簿，
+     *           生成的 Excel 为 .xlsx 格式，无样式，适用于中小规模数据导出。
      */
     @Override
     public byte[] exportLatestExtracts(List<String> batchNos) {
@@ -170,5 +175,4 @@ public class DashboardServiceImpl implements DashboardService {
     private String str(Object o) {
         return o == null ? "" : String.valueOf(o);
     }
-
 }

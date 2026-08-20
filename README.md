@@ -302,3 +302,75 @@ POST /api/experts/extract {applyType, technicalType, level, count}
       5. 写缓存 L1+L2
   → 返回 {batchNo, extractTime, isFromCache, experts}
 ```
+
+---
+
+## 面试技术亮点（可写进简历/面试讲）
+
+> 每个点按「难点 → 方案 → 效果」整理，方便面试时讲清楚。
+
+### 1. RBAC 权限模型 + 方法级鉴权
+
+- **难点**：不同用户能访问哪些功能？禁用某个权限后要立即生效。
+- **方案**：三级模型 `用户 → 角色 → 权限`（多对多，`sys_user_role` / `sys_role_permission` 两张关联表）。后端用 Spring Security 的 `@PreAuthorize("hasAuthority('权限编码')")` 做方法级鉴权，而不是按角色硬编码。
+- **效果**：权限配置化，禁用某权限后 `getPermissionCodesByUserId`（已过滤 `status=1`）不再返回 → 鉴权失败 → 返回「无权限」。做到了**细粒度、可配置、即时生效**。
+
+### 2. 多级缓存（本地 Caffeine + 分布式 Redis）
+
+- **难点**：抽取结果既要「快」又要「多实例一致」。
+- **方案**：L1 用 Caffeine（JVM 内存，纳秒级），L2 用 Redis（分布式共享）。读「L1 → L2 → 库」并回填 L1；写「同时写两级」。
+- **效果**：单实例命中走 L1 最快；跨实例走 L2 一致；**Redis 挂掉自动降级为仅 L1**，不影响主流程。
+
+### 3. 并发防重（抽取）
+
+- **难点**：并发请求可能抽到同一批专家（重复抽取）。
+- **方案**：`ReentrantLock` + **双重检查锁（DCL）**：先查缓存（无锁快速路径）→ 加锁 → 再查缓存 → 才真正抽取。抽取结果落库 `expert_extract_record` 作为 30 天去重依据。
+- **效果**：单实例内串行化抽取，避免并发重复。
+
+### 4. 百万级 Excel 导入优化
+
+- **难点**：原来用 POI 整表加载 + 逐条 insert，百万行会 **OOM** 且极慢。
+- **方案**：改用 **EasyExcel 流式读取（SAX 逐行解析，内存与行数无关）** + **MyBatis 批量插入（1000 条/批）**。
+- **效果**：内存恒定、插入批量化，可支撑百万级数据导入。
+
+### 5. JWT 无状态认证 + ThreadLocal 防泄漏
+
+- **难点**：无状态登录态如何传递当前用户？如何避免串号？
+- **方案**：`JwtAuthenticationFilter` 解析 Bearer token，把「角色 + 权限」写入 `SecurityContext`，同时把 userId 存进 `BaseContext`（ThreadLocal），**并在 `finally` 里 `remove()` 清理**。
+- **效果**：无状态、可水平扩展；ThreadLocal 及时清理，避免线程复用导致的用户 ID 串号/内存泄漏。
+
+### 6. 数据规范化（实体存编码 + 字典转中文）
+
+- **难点**：类型字段（申报类型/技术类型/级别/学历）既要能筛选，又要展示中文。
+- **方案**：实体表存**编码**（如 `medical`），字典表存「编码 → 中文」（`medical → 医疗`），展示时用字典转中文；Excel 导入时自动把中文标签转回编码。
+- **效果**：数据规范、可维护、可扩展，避免中英文混存。
+
+### 7. 全局异常处理 + 参数校验
+
+- **方案**：`GlobalExceptionHandler`（`@RestControllerAdvice`）统一处理业务异常、参数校验失败、类型错误、`AccessDeniedException`（无权限）、唯一键冲突等；入参用 Bean Validation（`@NotBlank`/`@Size`/`@Pattern`）+ `@Valid`。
+- **效果**：接口返回格式统一 `{code, msg, data}`，错误提示友好。
+
+### 8. AOP 操作日志
+
+- **方案**：自定义 `@Log(module, operation)` 注解 + `@Around` 切面，自动记录操作人、模块、操作内容、请求地址、IP、结果，落 `sys_operation_log`。
+- **效果**：业务代码零侵入，日志自动采集，便于审计。
+
+### 9. 多模块 Maven 项目 + 分层分包
+
+- **结构**：`random-common`（公共组件）/ `random-pojo`（实体、DTO、VO）/ `random-serve`（主应用）三模块；`controller / service / mapper / dto / vo / entity` 骨架层下再按业务模块分 `auth / user / role / expert ...` 子包。
+- **效果**：职责清晰、模块解耦、可复用、易维护。
+
+---
+
+## 常见面试追问（简要答）
+
+| 追问 | 回答要点 |
+|---|---|
+| `@PreAuthorize` 和拦截器鉴权有什么区别？ | `@PreAuthorize` 是 Spring Security 方法级鉴权（AOP），在方法执行前校验权限，注解声明式、粒度细；拦截器是 Web 层拦截，粒度粗。 |
+| Caffeine 和 Redis 为什么用两级？ | Caffeine 快（本地内存）但不跨实例共享；Redis 能共享但慢（网络往返）。两级兼顾速度与一致性。 |
+| 缓存一致性怎么保证？ | 写时双写 L1+L2；读时 L1 未命中回源 L2 并回填 L1；Redis 失效时降级 L1。 |
+| 抽取怎么去重？ | 落库 `expert_extract_record` 记录抽取时间，SQL 用 `not exists` 排除近 30 天已抽取的专家。 |
+| 为什么实体存编码不直接存中文？ | 编码稳定、可枚举、便于筛选和字典翻译，前端展示时再转中文，避免中英文混存和翻译耦合。 |
+| EasyExcel 为什么比 POI 更适合大文件？ | EasyExcel 基于 SAX 逐行解析（内存恒定），POI 的 XSSFWorkbook 是 DOM 方式整表加载（内存随行数线性增长）。 |
+| 分页怎么做的？ | PageHelper 拦截 SQL 自动加 LIMIT，`PageResult` 统一返回 `total + records`。 |
+

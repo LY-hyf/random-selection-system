@@ -13,6 +13,7 @@ import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 /**
  * 全局异常处理器。
@@ -89,6 +90,16 @@ public class GlobalExceptionHandler {
     public Result<Void> handleAccessDenied(AccessDeniedException ex) {
         log.warn("无权限访问：{}", ex.getMessage());
         return Result.error("无权限访问该功能");
+    }
+
+    /**
+     * 处理文件上传大小超限异常。
+     */
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public Result handleMaxUploadSizeExceededException(MaxUploadSizeExceededException e) {
+        String msg = "上传文件过大，请确保文件大小不超过 " + e.getMaxUploadSize() / (1024 * 1024) + "MB";
+        log.warn("文件上传超限：{}", e.getMessage());
+        return Result.error(msg);
     }
 
     /**

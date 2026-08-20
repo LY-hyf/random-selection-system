@@ -154,7 +154,6 @@ public class ExpertServiceImpl implements ExpertService {
                 records.add(vo);
             }
         }
-
         return new PageResult<>(pageInfo.getTotal(), records);
     }
 
@@ -235,99 +234,137 @@ public class ExpertServiceImpl implements ExpertService {
     /**
      * Excel 导入专家。
      *
-     * <p>解析上传的 Excel，逐行校验并写入，记录导入统计结果。</p>
+     * <p>采用 EasyExcel 流式读取（SAX 模式），逐行处理，内存友好，支持百万级数据。</p>
+     * <p>导入流程：</p>
+     * <ol>
+     *   <li>校验上传文件是否为空，构建字典反向映射（中文标签 → 编码），兼容用户使用中文填写 Excel 的情况；</li>
+     *   <li>初始化计数器（总数/成功数）和失败明细列表（线程安全），准备批量插入容器；</li>
+     *   <li>注册 EasyExcel 读取监听器，逐行处理：</li>
+     *   <ul>
+     *     <li>跳过示例/占位行（名称包含“示例”或“请删除”）；</li>
+     *     <li>增加总数计数；</li>
+     *     <li>将 Excel 行数据转换为专家实体，对日期、字典字段做编码转换；</li>
+     *     <li>进行业务校验（必填、格式等），失败则记录行号和原因，不进入数据库；</li>
+     *     <li>校验通过后设置默认字段（状态、删除标记、创建时间），加入批量容器；</li>
+     *     <li>当容器达到批量大小（IMPORT_BATCH_SIZE）时执行一次批量插入并清空容器；</li>
+     *   </ul>
+     *   <li>解析完成后，处理最后一批剩余数据；</li>
+     *   <li>记录导入明细（文件名、总数、成功数、失败数、操作人），存入数据库；</li>
+     *   <li>组装返回结果（总数、成功数、失败数、记录ID、失败明细列表）。</li>
+     * </ol>
      *
-     * @param file 上传的 Excel 文件
-     * @return 导入统计结果，包含总数、成功数、失败数及失败明细
+     * @param file 上传的 Excel 文件（.xlsx 或 .xls）
+     * @return 导入统计结果 Map，包含 totalCount / successCount / failCount / recordId / failDetails
+     * @throws LoginFailedException 文件为空或解析失败时抛出
      */
     @Override
     public Map<String, Object> importExperts(MultipartFile file) {
+        // 1. 文件基本校验
         if (file == null || file.isEmpty()) {
             throw new LoginFailedException("上传文件不能为空");
         }
-
-        // 构建 中文标签 -> 编码 的反向映射，兼容全中文 Excel 导入（也兼容已是编码的情况）
+        // 2. 构建字典反向映射（中文标签 -> 编码），用于将 Excel 中的中文值转换为数据库存储的编码
+        //    例如：Excel 中填写“医疗” -> 转换为 “medical”
+        //    同时兼容 Excel 中已填写编码（如 “medical”）的情况，映射会原样返回编码本身
         Map<String, String> applyTypeCodeMap = buildDictCodeMap("apply_type");
         Map<String, String> technicalTypeCodeMap = buildDictCodeMap("technical_type");
         Map<String, String> levelCodeMap = buildDictCodeMap("level");
         Map<String, String> educationCodeMap = buildDictCodeMap("education");
-
-        AtomicInteger totalCount = new AtomicInteger(0);
-        AtomicInteger successCount = new AtomicInteger(0);
-        List<Map<String, Object>> failDetails = Collections.synchronizedList(new ArrayList<>());
-        List<ExpertInfo> batch = new ArrayList<>(IMPORT_BATCH_SIZE);
-
+        // 3. 初始化统计变量（原子类确保线程安全）
+        AtomicInteger totalCount = new AtomicInteger(0);        // 总读取行数（不含示例行）
+        AtomicInteger successCount = new AtomicInteger(0);      // 成功导入数
+        List<Map<String, Object>> failDetails = Collections.synchronizedList(new ArrayList<>()); // 失败明细（线程安全）
+        List<ExpertInfo> batch = new ArrayList<>(IMPORT_BATCH_SIZE); // 批量插入容器
+        // 4. 使用 try-with-resources 自动关闭输入流
         try (InputStream is = file.getInputStream()) {
-            // 流式读取（SAX），逐行处理，内存占用与文件行数无关
+            // 4.1 注册 EasyExcel 读取监听器（流式读，逐行回调）
             EasyExcel.read(is, ExpertImportRow.class, new ReadListener<ExpertImportRow>() {
+                /**
+                 * 每解析一行数据时回调。
+                 *
+                 * @param row     当前行数据（已映射到 ExpertImportRow）
+                 * @param context 上下文（可获取行号等信息）
+                 */
                 @Override
                 public void invoke(ExpertImportRow row, AnalysisContext context) {
-                    // 示例行跳过：name 包含「示例」或「请删除」
+                    // 跳过模板中的示例行（通常用于提示用户填写格式）
                     if (row.getName() != null
                             && (row.getName().contains("示例") || row.getName().contains("请删除"))) {
                         return;
                     }
+                    // 4.1.1 增加总行数计数
                     totalCount.incrementAndGet();
-
+                    // 4.1.2 创建专家实体，将 Excel 字段转换为数据库字段
                     ExpertInfo expert = new ExpertInfo();
-                    expert.setName(row.getName());
-                    expert.setBirthday(parseDate(row.getBirthday()));
-                    expert.setEducation(toCode(row.getEducation(), educationCodeMap));
-                    expert.setCompany(row.getCompany());
-                    expert.setApplyType(toCode(row.getApplyType(), applyTypeCodeMap));
-                    expert.setTechnicalType(toCode(row.getTechnicalType(), technicalTypeCodeMap));
-                    expert.setLevel(toCode(row.getLevel(), levelCodeMap));
-                    expert.setPhone(row.getPhone());
-
+                    expert.setName(row.getName());                                   // 姓名
+                    expert.setBirthday(parseDate(row.getBirthday()));               // 出生日期（解析为 LocalDate）
+                    expert.setEducation(toCode(row.getEducation(), educationCodeMap)); // 学历（中文→编码）
+                    expert.setCompany(row.getCompany());                            // 工作单位
+                    expert.setApplyType(toCode(row.getApplyType(), applyTypeCodeMap)); // 申报类型
+                    expert.setTechnicalType(toCode(row.getTechnicalType(), technicalTypeCodeMap)); // 技术类型
+                    expert.setLevel(toCode(row.getLevel(), levelCodeMap));          // 级别
+                    expert.setPhone(row.getPhone());                                // 联系方式
+                    // 4.1.3 获取当前行号（用于错误定位）
                     int rowNum = context.readRowHolder().getRowIndex() + 1;
+                    // 4.1.4 校验专家数据（必填、格式、字典值有效性等）
                     String reason = validateExpert(expert);
                     if (reason != null) {
+                        // 校验失败：记录失败明细（行号、姓名、失败原因）
                         Map<String, Object> fail = new HashMap<>();
                         fail.put("row", rowNum);
                         fail.put("name", expert.getName());
                         fail.put("reason", reason);
                         failDetails.add(fail);
-                        return;
+                        return; // 跳过该行，不进行数据库操作
                     }
-
-                    expert.setStatus(StatusConstant.ENABLE);
-                    expert.setDeleted(0);
-                    expert.setCreateTime(LocalDateTime.now());
+                    // 4.1.5 校验通过：设置默认字段
+                    expert.setStatus(StatusConstant.ENABLE);   // 状态：启用
+                    expert.setDeleted(0);                      // 未删除
+                    expert.setCreateTime(LocalDateTime.now()); // 创建时间
+                    // 4.1.6 加入批量插入容器
                     batch.add(expert);
+                    // 4.1.7 当容器达到批量阈值时，执行一次批量插入并累加成功数
                     if (batch.size() >= IMPORT_BATCH_SIZE) {
                         successCount.addAndGet(flushImportBatch(batch));
+                        // batch 在 flushImportBatch 内部会被清空（注意 flushImportBatch 需实现清空逻辑）
                     }
                 }
-
+                /**
+                 * 所有数据解析完成后的回调（无论是否有异常）。
+                 *
+                 * @param context 上下文
+                 */
                 @Override
                 public void doAfterAllAnalysed(AnalysisContext context) {
-                    // flush 最后一批
+                    // 4.2 处理最后一批剩余数据（不足 BATCH_SIZE 的部分）
                     successCount.addAndGet(flushImportBatch(batch));
                 }
-            }).sheet().doRead();
+            }).sheet().doRead(); // 读取默认 sheet
         } catch (IOException e) {
+            // 5. 文件 I/O 异常处理
             throw new LoginFailedException("文件解析失败，请上传正确的 Excel 文件");
         }
-
+        // 6. 记录导入明细（用于历史追踪）
         ExpertImportRecord record = new ExpertImportRecord();
         record.setFileName(file.getOriginalFilename());
         record.setTotalCount(totalCount.get());
         record.setSuccessCount(successCount.get());
         record.setFailCount(totalCount.get() - successCount.get());
-        record.setUserId(BaseContext.getCurrentId());
+        record.setUserId(BaseContext.getCurrentId());          // 当前操作用户ID（从线程上下文获取）
         record.setCreateTime(LocalDateTime.now());
-        expertImportRecordMapper.insert(record);
-
+        expertImportRecordMapper.insert(record);               // 入库
+        // 7. 组装返回结果
         Map<String, Object> result = new HashMap<>();
         result.put("totalCount", totalCount.get());
         result.put("successCount", successCount.get());
         result.put("failCount", totalCount.get() - successCount.get());
-        result.put("recordId", record.getId());
-        result.put("failDetails", failDetails);
-
+        result.put("recordId", record.getId());                // 导入记录ID，供前端/后续查询
+        result.put("failDetails", failDetails);                // 失败明细列表
+        // 8. 记录业务日志
         log.info("专家导入完成，文件: {}, 总数: {}, 成功: {}, 失败: {}",
                 file.getOriginalFilename(), totalCount.get(), successCount.get(),
                 totalCount.get() - successCount.get());
+
         return result;
     }
 
@@ -358,7 +395,6 @@ public class ExpertServiceImpl implements ExpertService {
             for (int i = 0; i < headers.length; i++) {
                 headerRow.createCell(i).setCellValue(headers[i]);
             }
-
             // 示例数据行（类型字段用中文标签，导入时会自动转编码）；正式上传前请删除本行
             Row sampleRow = sheet.createRow(1);
             sampleRow.createCell(0).setCellValue("张三（示例，请删除）");
@@ -696,7 +732,17 @@ public class ExpertServiceImpl implements ExpertService {
     }
 
     /**
-     * 根据最近抽取时间计算抽取状态。
+     * 根据最近一次抽取时间计算当前抽取状态。
+     * <p>
+     * 业务规则：若最近抽取时间在距今 30 天以内（包含当天），则认为当前处于“已抽取”状态；
+     * 否则视为“未抽取”。该方法主要用于前端展示或业务逻辑判断，如控制抽取按钮的可操作性。
+     *
+     * @param lastExtractTime 最近一次抽取的时间，可为 {@code null}
+     * @return 状态字符串：
+     *         <ul>
+     *             <li>若 {@code lastExtractTime} 不为 {@code null} 且在 30 天内 → {@code "已抽取"}</li>
+     *             <li>否则 → {@code "未抽取"}</li>
+     *         </ul>
      */
     private String computeExtractStatus(LocalDateTime lastExtractTime) {
         if (lastExtractTime != null && lastExtractTime.isAfter(LocalDateTime.now().minusDays(30))) {
@@ -755,5 +801,4 @@ public class ExpertServiceImpl implements ExpertService {
     private String str(Object o) {
         return o == null ? "" : String.valueOf(o);
     }
-
 }

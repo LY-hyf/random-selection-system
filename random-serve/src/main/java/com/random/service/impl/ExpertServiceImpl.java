@@ -444,7 +444,7 @@ public class ExpertServiceImpl implements ExpertService {
                     log.info("开始执行异步导入, taskId: {}, 线程: {}",
                             taskId, Thread.currentThread().getName());
 
-                    // ===== 从字节数组重建 MultipartFile，解决异步的临时线程被回收问题=====
+                    // ===== 从字节数组重建 MultipartFile，解决异步的临时线程无法被回收问题=====
                     MultipartFile fileCopy = new MockMultipartFile(
                             fileName,
                             fileName,
@@ -684,6 +684,22 @@ public class ExpertServiceImpl implements ExpertService {
             extractLock.unlock();
         }
     }
+
+    /**
+     *
+     * @param request 抽取请求，包含抽取数量与筛选条件
+     * @return 异步线程
+     */
+    @Override
+    public CompletableFuture<ExtractResultVO> extractAsync(ExtractRequest request,Long userId) {
+        // 使用 supplyAsync（有返回值），在后台线程执行
+        return CompletableFuture.supplyAsync(() -> {
+            BaseContext.setCurrentId(userId);
+            log.info("开始异步抽取，线程: {}", Thread.currentThread().getName());
+            return extract(request);
+        }, expertExtractPool);
+    }
+
 
     /**
      * 创建缓存结果对象的副本，并将其标记为来自缓存。

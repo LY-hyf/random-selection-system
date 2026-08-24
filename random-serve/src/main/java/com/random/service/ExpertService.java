@@ -113,12 +113,20 @@ public interface ExpertService {
     PageResult<Map<String, Object>> importRecords(int pageNum, int pageSize);
 
     /**
-     * 随机抽取专家。
+     * 同步随机抽取专家，供异步调用。
      *
      * @param request 抽取请求，包含抽取数量与筛选条件
      * @return 抽取结果
      */
     ExtractResultVO extract(ExtractRequest request);
+
+    /**
+     * 异步随机抽取专家。
+     *
+     * @param request 抽取请求，包含抽取数量与筛选条件
+     * @return 抽取结果
+     */
+    CompletableFuture<ExtractResultVO> extractAsync(ExtractRequest request,Long userId);
 
     /**
      * 导出抽取专家结果。

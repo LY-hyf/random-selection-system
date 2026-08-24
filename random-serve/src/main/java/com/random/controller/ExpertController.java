@@ -1,6 +1,7 @@
 package com.random.controller;
 
 import com.random.annotation.Log;
+import com.random.context.BaseContext;
 import com.random.pojo.dto.ExpertPageRequest;
 import com.random.pojo.dto.ExtractHistoryPageRequest;
 import com.random.pojo.dto.ExtractRequest;
@@ -12,7 +13,6 @@ import com.random.result.Result;
 import com.random.service.ExpertService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -30,10 +30,7 @@ import javax.validation.Valid;
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.*;
 
 /**
  * 专家管理控制器。
@@ -95,9 +92,31 @@ public class ExpertController {
     @PreAuthorize("hasAuthority('expert:extract')")
     @PostMapping("/extract")
     public Result<ExtractResultVO> extract(@RequestBody ExtractRequest request) {
-        log.info("随机抽取专家, applyType: {}, technicalType: {}, level: {}, count: {}",
+        // 主线程获取 userId
+        Long userId = BaseContext.getCurrentId();
+        if (userId == null) {
+            return Result.error("未获取到用户信息，请重新登录");
+        }
+        log.info("提交异步任务, applyType: {}, technicalType: {}, level: {}, count: {}",
                 request.getApplyType(), request.getTechnicalType(), request.getLevel(), request.getCount());
-        return Result.success(expertService.extract(request));
+        // 调用异步抽取
+        CompletableFuture<ExtractResultVO> future = expertService.extractAsync(request,userId);
+        // 设置超时（防止长时间阻塞）
+        try {
+            ExtractResultVO result = null;
+            try {
+                result = future.get(5, TimeUnit.SECONDS);
+            } catch (InterruptedException | ExecutionException e) {
+                throw new RuntimeException(e);
+            }
+            return Result.success(result);
+        } catch (TimeoutException e) {
+            log.warn("抽取超时，降级返回处理中状态");
+            return Result.error("抽取任务正在处理，请稍后刷新查看结果");
+        } catch (RejectedExecutionException e) {
+            log.error("抽取失败", e);
+            return Result.error("业务繁忙，抽取失败，请稍后再试");
+        }
     }
 
     /**
@@ -188,10 +207,15 @@ public class ExpertController {
             throws ExecutionException,InterruptedException, TimeoutException {
         log.info("导入专家, fileName: {}, size: {} bytes",
                 file.getOriginalFilename(), file.getSize());
-        // 提交异步任务，释放主线程
-        String taskId = expertService.submitImportAsyncTask(file);
-        log.info("异步导入任务已提交, taskId: {}", taskId);
-        return Result.success(taskId);
+        try{
+            // 提交异步任务，释放主线程
+            String taskId = expertService.submitImportAsyncTask(file);
+            log.info("异步导入任务已提交, taskId: {}", taskId);
+            return Result.success(taskId);
+        } catch (RejectedExecutionException e) {
+            log.warn("异步任务堆积过多，拒绝新任务");
+            return Result.error("系统繁忙，请稍后再试");
+        }
     }
 
     /**

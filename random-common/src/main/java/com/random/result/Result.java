@@ -32,6 +32,20 @@ public class Result<T> implements Serializable {
     }
 
     /**
+     * 构建一个不带数据的成功结果。
+     *
+     * @param  data 返回的taskId
+     * @return 状态码为 1 的成功结果
+     */
+    public static Result<String> success(String data) {
+        Result<String> result = new Result<>();
+        result.code = 200;          // 建议用 200 而不是 1
+        result.msg = "操作成功";
+        result.data = data;         // 必须把数据塞进去！
+        return result;
+    }
+
+    /**
      * 构建一个带数据的成功结果。
      *
      * @param object 要返回的数据
@@ -44,7 +58,6 @@ public class Result<T> implements Serializable {
         result.code = 1;
         return result;
     }
-
 
     /**
      * 构建一个失败结果。

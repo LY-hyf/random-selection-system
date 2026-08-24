@@ -1,6 +1,6 @@
 package com.random.mapper.dict;
 
-import com.random.pojo.entity.dict.SysDict;
+import com.random.pojo.entity.SysDict;
 import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;

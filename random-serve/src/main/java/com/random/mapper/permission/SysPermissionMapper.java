@@ -1,7 +1,7 @@
 package com.random.mapper.permission;
 
-import com.random.pojo.dto.permission.PermissionPageRequest;
-import com.random.pojo.entity.permission.SysPermission;
+import com.random.pojo.dto.PermissionPageRequest;
+import com.random.pojo.entity.SysPermission;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Options;

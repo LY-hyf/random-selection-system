@@ -1,7 +1,7 @@
 package com.random.mapper.role;
 
-import com.random.pojo.dto.role.RolePageRequest;
-import com.random.pojo.entity.role.SysRole;
+import com.random.pojo.dto.RolePageRequest;
+import com.random.pojo.entity.SysRole;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Options;

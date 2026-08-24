@@ -1,6 +1,6 @@
 package com.random.mapper.expert;
 
-import com.random.pojo.entity.expert.ExpertImportRecord;
+import com.random.pojo.entity.ExpertImportRecord;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Options;

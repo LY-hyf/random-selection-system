@@ -1,7 +1,7 @@
 package com.random.mapper.user;
 
-import com.random.pojo.dto.user.PageRequest;
-import com.random.pojo.entity.user.SysUser;
+import com.random.pojo.dto.PageRequest;
+import com.random.pojo.entity.SysUser;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Options;

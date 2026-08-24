@@ -3,7 +3,7 @@ package com.random.aspect;
 import com.random.annotation.Log;
 import com.random.context.BaseContext;
 import com.random.mapper.log.SysOperationLogMapper;
-import com.random.pojo.entity.log.SysOperationLog;
+import com.random.pojo.entity.SysOperationLog;
 import lombok.extern.slf4j.Slf4j;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;

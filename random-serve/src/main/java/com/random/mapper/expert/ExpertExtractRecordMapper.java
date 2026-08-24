@@ -1,7 +1,7 @@
 package com.random.mapper.expert;
 
-import com.random.pojo.dto.expert.ExtractHistoryPageRequest;
-import com.random.pojo.entity.expert.ExpertExtractRecord;
+import com.random.pojo.dto.ExtractHistoryPageRequest;
+import com.random.pojo.entity.ExpertExtractRecord;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Options;

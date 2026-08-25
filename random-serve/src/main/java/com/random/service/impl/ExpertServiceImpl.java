@@ -119,7 +119,7 @@ public class ExpertServiceImpl implements ExpertService {
     /** 本地缓存（L1），用于快速命中，避免频繁访问 Redis */
     private final Cache<String, ExtractResultVO> localCache = Caffeine.newBuilder()
             .expireAfterWrite(EXTRACT_CACHE_TTL_MINUTES, TimeUnit.MINUTES)
-            .maximumSize(100)
+            .maximumSize(1000)
             .build();
 
     @Autowired
@@ -1004,7 +1004,7 @@ public class ExpertServiceImpl implements ExpertService {
         boolean locked = false;
         try {
             // 尝试获取锁，等待 5 秒，持有 30 秒
-            locked = lock.tryLock(5, 30, TimeUnit.SECONDS);
+            locked = lock.tryLock(5, TimeUnit.SECONDS);
             if (!locked) {
                 // 如果获取锁失败，直接抛出异常，避免后续无意义的 pop
                 throw new BaseException("系统繁忙，请稍后重试");

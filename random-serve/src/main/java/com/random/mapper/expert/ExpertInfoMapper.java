@@ -141,6 +141,7 @@ public interface ExpertInfoMapper {
             "<if test=\"technicalType != null and technicalType != ''\">and e.technical_type = #{technicalType} </if>" +
             "<if test=\"level != null and level != ''\">and e.level = #{level} </if>" +
             "</script>")
+    @Options(timeout = 30)
     List<ExpertInfo> getExtractableExperts(@Param("applyType") String applyType,
                                            @Param("technicalType") String technicalType,
                                            @Param("level") String level);
@@ -168,12 +169,15 @@ public interface ExpertInfoMapper {
             "AND e.apply_type=#{applyType} AND e.technical_type=#{techType} AND e.level=#{level} " +
             "AND NOT EXISTS (SELECT 1 FROM expert_extract_record r WHERE r.expert_id = e.id " +
             "AND r.extract_time > DATE_SUB(NOW(), INTERVAL 30 DAY))")
+    @Options(timeout = 30)
     List<Long> getExtractableExpertIds(@Param("applyType") String applyType,
                                        @Param("techType") String techType,
                                        @Param("level") String level);
 
     /**
      *根据专家id批量获取专家信息
+     * 设置获取锁后锁的超时时间30S，防止看门狗机制无限续期，超时触发finally抛出异常解锁
+     * id走主键索引查询时间短无需设置超时时间
      * @author hyf
      * @since 2026/8/25
      */
@@ -187,5 +191,5 @@ public interface ExpertInfoMapper {
             "#{item}" +
             "</foreach>" +
             "</script>")
-   List<ExpertInfo> selectBatchIds(@Param("ids") List<Long> ids);
+    List<ExpertInfo> selectBatchIds(@Param("ids") List<Long> ids);
 }

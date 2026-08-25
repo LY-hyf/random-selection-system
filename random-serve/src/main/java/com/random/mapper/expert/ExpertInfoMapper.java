@@ -10,6 +10,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 专家信息数据访问接口。
@@ -144,4 +145,47 @@ public interface ExpertInfoMapper {
                                            @Param("technicalType") String technicalType,
                                            @Param("level") String level);
 
+    /**
+     * 获取所有查询条件的组合
+     *
+     * @author hyf
+     * @since 2026/8/25
+     */
+    @Select("select DISTINCT apply_type, technical_type, level FROM expert_info WHERE status=1 AND deleted=0")
+    List<Map<String, String>> getDistinctCombinations();
+
+    /**
+     * 获取在特定查询条件下30天内未被抽取的专家Id
+     *
+     * @param applyType
+     * @param techType
+     * @param level
+     * @return 专家Id
+     * @author hyf
+     * @since 2026/8/25
+     */
+    @Select("SELECT id FROM expert_info e WHERE e.status=1 AND e.deleted=0 " +
+            "AND e.apply_type=#{applyType} AND e.technical_type=#{techType} AND e.level=#{level} " +
+            "AND NOT EXISTS (SELECT 1 FROM expert_extract_record r WHERE r.expert_id = e.id " +
+            "AND r.extract_time > DATE_SUB(NOW(), INTERVAL 30 DAY))")
+    List<Long> getExtractableExpertIds(@Param("applyType") String applyType,
+                                       @Param("techType") String techType,
+                                       @Param("level") String level);
+
+    /**
+     *根据专家id批量获取专家信息
+     * @author hyf
+     * @since 2026/8/25
+     */
+    @Select("<script>" +
+            "SELECT id, name, birthday, education, company, " +
+            "apply_type, technical_type, level, phone, " +
+            "status, deleted, create_time, update_time " +
+            "FROM expert_info " +
+            "WHERE id IN " +
+            "<foreach collection='ids' item='item' open='(' separator=',' close=')'>" +
+            "#{item}" +
+            "</foreach>" +
+            "</script>")
+   List<ExpertInfo> selectBatchIds(@Param("ids") List<Long> ids);
 }

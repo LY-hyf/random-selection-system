@@ -81,4 +81,6 @@ public interface ExpertExtractRecordMapper {
             "where r.batch_no = #{batchNo}")
     List<Map<String, Object>> getExpertsByBatchNo(@Param("batchNo") String batchNo);
 
+
+
 }

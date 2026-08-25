@@ -36,6 +36,8 @@ import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import lombok.extern.slf4j.Slf4j;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.mock.web.MockMultipartFile;
@@ -102,9 +104,6 @@ public class ExpertServiceImpl implements ExpertService {
     @Autowired
     private ThreadPoolExecutor expertImportPool;
 
-    @Autowired
-    private ThreadPoolExecutor expertExtractPool;
-
     /** 任务状态 Key 前缀 */
     private static final String TASK_RESULT_PREFIX = "import:task:";
 
@@ -122,6 +121,9 @@ public class ExpertServiceImpl implements ExpertService {
             .expireAfterWrite(EXTRACT_CACHE_TTL_MINUTES, TimeUnit.MINUTES)
             .maximumSize(100)
             .build();
+
+    @Autowired
+    private RedissonClient redissonClient;
 
     /**
      * 分页查询专家。
@@ -623,31 +625,22 @@ public class ExpertServiceImpl implements ExpertService {
                 return copyAsFromCache(cached);
             }
             // ---- 第三阶段：数据库查询与随机筛选 ----
-            /**
-             * 根据申请类型、技术类型、级别从数据库查询所有可抽取的专家（未被禁用或满足业务条件）
-             * 数据查询层expertInfoMapper.getExtractableExperts 查询专家与expert_extract_record的专家id和抽取时间有关，与userId无关
-             */
-            List<ExpertInfo> experts = expertInfoMapper.getExtractableExperts(
-                    request.getApplyType(), request.getTechnicalType(), request.getLevel());
-            // 若无可抽取专家，抛出业务异常
-            if (experts == null || experts.isEmpty()) {
-                throw new BaseException("没有符合条件的专家");
-            }
-            // 随机打乱专家列表，实现抽取的随机性（公平性）
-            Collections.shuffle(experts);
-            // 确定实际抽取数量：默认为5，但限制在1~20之间，且不能超过专家总数
-            int requestCount = request.getCount() == null || request.getCount() < 1 ? 5 : request.getCount();
-            requestCount = Math.min(requestCount, 20);
-            int count = Math.min(experts.size(), requestCount);
-            // 截取前 count 个专家作为本次抽取结果
-            List<ExpertInfo> selected = new ArrayList<>(experts.subList(0, count));
-            // ---- 第四阶段：生成批次号并持久化抽取记录 ----
-            // 批次号格式：EX-年月日时分秒（精确到秒），用于标识本次抽取的批次
-            String batchNo = "EX-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
+            // ===== 核心变更点：从 Redis Set 弹出 ID，替代 SQL 随机查询 =====
+            // 旧逻辑（删除）：List<ExpertInfo> experts = expertInfoMapper.getExtractableExperts(...);
+            // 新逻辑（替换）
+            // 随机弹出1-20，默认为5的专家id
+            List<Long>selectIds = popExpertIdsFromPool(
+                    request.getApplyType(),
+                    request.getTechnicalType(),
+                    request.getLevel(),
+                    request.getCount() == null ? 5 : Math.min(request.getCount(), 20)
+            );
+            // 批量根据专家id查询专家信息（主键索引）
+            List<ExpertInfo>selected = expertInfoMapper.selectBatchIds(selectIds);
+            // 第三阶段：记录抽取历史，保证30天抽取不重复
+            String batchNo = "EX" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
             LocalDateTime now = LocalDateTime.now();
-
-            // 遍历选中的专家，构建抽取记录并插入数据库（记录用户、批次、专家、抽取时间等信息）
-            for (ExpertInfo expert : selected) {
+            for (ExpertInfo expert : selected){
                 ExpertExtractRecord record = new ExpertExtractRecord();
                 record.setBatchNo(batchNo);
                 record.setExpertId(expert.getId());
@@ -656,15 +649,14 @@ public class ExpertServiceImpl implements ExpertService {
                 record.setTechnicalType(expert.getTechnicalType());
                 record.setLevel(expert.getLevel());
                 record.setExtractTime(now);
-                record.setCreateTime(now);
                 expertExtractRecordMapper.insert(record);
             }
-            // ---- 第五阶段：构建字典标签映射（用于将编码转换为可读名称） ----
+            // ---- 第四阶段：构建字典标签映射（用于将编码转换为可读名称） ----
             // 分别获取申请类型、技术类型、级别的字典映射（如 "01" -> "初级"）
             Map<String, String> applyTypeMap = buildDictLabelMap("apply_type");
             Map<String, String> technicalTypeMap = buildDictLabelMap("technical_type");
             Map<String, String> levelMap = buildDictLabelMap("level");
-            // ---- 第六阶段：组装返回结果对象 ----
+            // ---- 第五阶段：组装返回结果对象 ----
             ExtractResultVO result = new ExtractResultVO();
             result.setBatchNo(batchNo);
             result.setExtractTime(now);
@@ -673,7 +665,7 @@ public class ExpertServiceImpl implements ExpertService {
             result.setExperts(selected.stream()
                     .map(e -> toExtractExpertVO(e, applyTypeMap, technicalTypeMap, levelMap))
                     .collect(Collectors.toList()));
-            // ---- 第七阶段：缓存结果 ----
+            // ---- 第六阶段：缓存结果 ----
             // 将本次抽取结果放入缓存，后续相同条件的请求可直接复用（默认有过期时间，避免数据陈旧）
             putCache(cacheKey, result);
             log.info("抽取完成，batchNo: {}, 抽取人数: {}, 条件: applyType={}, technicalType={}, level={}",
@@ -995,4 +987,60 @@ public class ExpertServiceImpl implements ExpertService {
     private String str(Object o) {
         return o == null ? "" : String.valueOf(o);
     }
+
+    /**
+     * 从 Redis Set 中弹出 N 个专家 ID（带自动补货逻辑）。
+     */
+    private List<Long> popExpertIdsFromPool(String applyType, String techType, String level, int count) {
+        String poolKey = "pool:" + applyType + ":" + techType + ":" + level;
+        // 1. 尝试直接弹出
+        List<String> popped = stringRedisTemplate.opsForSet().pop(poolKey, count);
+        if (popped != null && popped.size() >= count) {
+            return popped.stream().map(Long::parseLong).collect(Collectors.toList());
+        }
+        // 2. 池子空了（或不够），需要补货（加分布式锁）
+        String lockKey = poolKey + ":lock";
+        RLock lock = redissonClient.getLock(lockKey);
+        boolean locked = false;
+        try {
+            // 尝试获取锁，等待 5 秒，持有 30 秒
+            locked = lock.tryLock(5, 30, TimeUnit.SECONDS);
+            if (!locked) {
+                // 如果获取锁失败，直接抛出异常，避免后续无意义的 pop
+                throw new BaseException("系统繁忙，请稍后重试");
+            }
+            // 双重检查：再次确认池子是否已被其他节点补满
+            Long currentSize = stringRedisTemplate.opsForSet().size(poolKey);
+            if (currentSize == null || currentSize < count) {
+                // 查数据库（走复杂 NOT EXISTS 查询，只在首次或池耗尽时触发）
+                List<Long> ids = expertInfoMapper.getExtractableExpertIds(applyType, techType, level);
+                if (ids.isEmpty()) {
+                    throw new BaseException("当前无符合条件的专家可抽取");
+                }
+                // 塞入 Redis Set
+                String[] idArray = ids.stream().map(String::valueOf).toArray(String[]::new);
+                stringRedisTemplate.opsForSet().add(poolKey, idArray);
+                stringRedisTemplate.expire(poolKey, 30, TimeUnit.DAYS);
+                log.info("补货专家池成功，key: {}, 数量: {}", poolKey, ids.size());
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new BaseException("系统繁忙，请重试");
+        } finally {
+            if (locked) {
+                lock.unlock();
+            }
+        }
+        // 3. 再次尝试弹出
+        List<String> retryPopped = stringRedisTemplate.opsForSet().pop(poolKey, count);
+        if (retryPopped == null || retryPopped.size() < count) {
+            // 如果补货后仍然不足，说明数据库记录本身少于请求数量，抛出明确异常
+            int actual = retryPopped == null ? 0 : retryPopped.size();
+            throw new BaseException("符合条件的专家不足 " + count + " 人，当前仅 " + actual + " 人");
+        }
+        return retryPopped.stream().map(Long::parseLong).collect(Collectors.toList());
+    }
+
+
+
 }

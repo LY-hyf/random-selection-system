@@ -81,6 +81,13 @@ public interface ExpertExtractRecordMapper {
             "where r.batch_no = #{batchNo}")
     List<Map<String, Object>> getExpertsByBatchNo(@Param("batchNo") String batchNo);
 
-
+    /**
+     * 统计最近 N 天内的总抽取记录数（用于判断样本是否充足）
+     *
+     * @param days 天数，如 30 表示最近 30 天
+     * @return 抽取记录总数
+     */
+    @Select("SELECT COUNT(*) FROM expert_extract_record WHERE extract_time > DATE_SUB(NOW(), INTERVAL #{days} DAY)")
+    Long countTotalExtracts(@Param("days") int days);
 
 }

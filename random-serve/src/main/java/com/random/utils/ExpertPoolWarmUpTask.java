@@ -1,5 +1,6 @@
 package com.random.utils;
 
+import com.random.mapper.expert.ExpertExtractRecordMapper;
 import com.random.mapper.expert.ExpertInfoMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -25,20 +26,28 @@ public class ExpertPoolWarmUpTask {
     private ExpertInfoMapper expertInfoMapper;
 
     @Autowired
+    private ExpertExtractRecordMapper expertExtractRecordMapper;
+
+    @Autowired
     private StringRedisTemplate stringRedisTemplate;
+
+    /** 预热阈值 **/
+    public static final Integer PREHEAT_THRESOLD = 500;
 
     @Scheduled(cron = "0 0 2 * * ?")
     public void warmUpAllPools(){
         log.info("开始智能预热全局专家缓存池（基于抽取记录统计）..");
-        // 1. 统计最近 30 天最热门的 Top 20 组合
-        List<Map<String, Object>> hotCombos = expertInfoMapper.getHotCombinations(30, 20);
+        // 1. 先统计7天内的总抽取次数
+        Long totalExtractCount = expertExtractRecordMapper.countTotalExtracts(30);
 
-        if (hotCombos == null || hotCombos.isEmpty()) {
-            // 如果没有抽取记录，回退到全量组合
-            log.warn("无抽取记录，回退到全量组合预热");
-            warmUpAllPools();
+        // 2. 如果总抽取记录少于阈值（如500条），说明样本不足，直接全量预热
+        if (totalExtractCount == null || totalExtractCount < PREHEAT_THRESOLD) {
+            log.warn("30天内总抽取记录仅 {} 条，样本不足，回退到全量预热", totalExtractCount);
+            warmUpAllPoolsFull();
             return;
         }
+        // 3. 样本充足，走智能热点预热（Top 20）
+        List<Map<String, Object>> hotCombos = expertInfoMapper.getHotCombinations(30, 20);
         int total = 0;
         for(Map<String, Object> combo : hotCombos){
             String applyType = (String) combo.get("apply_type");
@@ -63,7 +72,32 @@ public class ExpertPoolWarmUpTask {
             }
         }
         log.info("智能预热完成，共预热 {} 个组合，总数: {}", hotCombos.size(), total);
+    }
 
+    /**
+     * 全量预热（兜底）
+     */
+    private void warmUpAllPoolsFull() {
+        log.info("开始全量预热...");
+        List<Map<String, String>> combinations = expertInfoMapper.getDistinctCombinations();
+        int total = 0;
+        for (Map<String, String> comb : combinations) {
+            String applyType = comb.get("apply_type");
+            String techType = comb.get("technical_type");
+            String level = comb.get("level");
+            String poolKey = "pool:" + applyType + ":" + techType + ":" + level;
+
+            stringRedisTemplate.delete(poolKey);
+
+            List<Long> ids = expertInfoMapper.getExtractableExpertIds(applyType, techType, level);
+            if (!ids.isEmpty()) {
+                String[] idArray = ids.stream().map(String::valueOf).toArray(String[]::new);
+                stringRedisTemplate.opsForSet().add(poolKey, idArray);
+                stringRedisTemplate.expire(poolKey, 30, TimeUnit.DAYS);
+                total += ids.size();
+            }
+        }
+        log.info("全量预热完成，共预热 {} 个组合，总数: {}", combinations.size(), total);
     }
 
     @PostConstruct

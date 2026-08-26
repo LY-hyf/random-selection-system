@@ -54,6 +54,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -113,8 +114,15 @@ public class ExpertServiceImpl implements ExpertService {
     /** 专家导入批量插入大小 */
     private static final int IMPORT_BATCH_SIZE = 1000;
 
-    /** 抽取锁，用于串行化抽取操作，防止并发重复抽取 */
-    private final ReentrantLock extractLock = new ReentrantLock();
+//    /** 抽取锁，用于串行化抽取操作，防止并发重复抽取 */
+//    private final ReentrantLock extractLock = new ReentrantLock();
+
+    /**
+     * 锁池：按 cacheKey 隔离，实现不同用户并行抽取。
+     * Key = userId + ":" + applyType + ":" + technicalType + ":" + level
+     * Value = ReentrantLock 实例
+     */
+    private final ConcurrentHashMap<String, ReentrantLock> lockPool = new ConcurrentHashMap<>();
 
     /** 本地缓存（L1），用于快速命中，避免频繁访问 Redis */
     private final Cache<String, ExtractResultVO> localCache = Caffeine.newBuilder()
@@ -654,34 +662,28 @@ public class ExpertServiceImpl implements ExpertService {
      */
     @Override
     public ExtractResultVO extract(ExtractRequest request) {
-        // 获取当前登录用户ID（从线程上下文ThreadLocal中获取）
+        // 获取当前登录用户ID
         Long userId = BaseContext.getCurrentId();
-        // 构建缓存键，由“用户ID:申请类型:技术类型:级别”组成，确保不同条件组合的缓存隔离,确保每个用户5分钟缓存隔离
+        // 构建缓存键（同时作为锁的Key）
         String cacheKey = userId + ":" + request.getApplyType() + ":" + request.getTechnicalType() + ":" + request.getLevel();
         // ---- 第一阶段：无锁快速路径 ----
-        // 先尝试从缓存中获取结果，若命中则直接返回（注意返回副本，避免缓存对象被修改）
         ExtractResultVO cached = getCached(cacheKey);
         if (cached != null) {
             log.info("抽取命中缓存，batchNo: {}", cached.getBatchNo());
-            // 返回缓存数据的副本（深拷贝或浅拷贝视具体实现，此处方法名暗示返回不可变副本）
             return copyAsFromCache(cached);
         }
-        // ---- 第二阶段：加锁防止并发重复抽取 ----
-        // 使用可重入锁（ReentrantLock）保证同一时刻只有一个线程执行抽取逻辑，避免为相同条件生成多批次数据
-        extractLock.lock();
+        // ---- 第二阶段：按 Key 获取细粒度锁 ----
+        ReentrantLock lock = lockPool.computeIfAbsent(cacheKey, k -> new ReentrantLock());
+        lock.lock();
         try {
-            // 双重检查（Double-Check）：获取锁后再次查询缓存，防止在等待锁期间其他线程已完成抽取并写入缓存
+            // 双重检查：核心是为了防抖（同一用户缓存失效的多次点击请求）其他请求可能已经写入缓存
             cached = getCached(cacheKey);
             if (cached != null) {
                 log.info("抽取命中缓存（并发等待后），batchNo: {}", cached.getBatchNo());
                 return copyAsFromCache(cached);
             }
-            // ---- 第三阶段：数据库查询与随机筛选 ----
-            // ===== 核心变更点：从 Redis Set 弹出 ID，替代 SQL 随机查询 =====
-            // 旧逻辑（删除）：List<ExpertInfo> experts = expertInfoMapper.getExtractableExperts(...);
-            // 新逻辑（替换）
-            // 随机弹出1-20，默认为5的专家id
-            List<Long>selectIds = popExpertIdsFromPool(
+            // ---- 第三阶段：从 Redis Set 弹出 ID ----
+            List<Long> selectIds = popExpertIdsFromPool(
                     request.getApplyType(),
                     request.getTechnicalType(),
                     request.getLevel(),
@@ -690,16 +692,19 @@ public class ExpertServiceImpl implements ExpertService {
             log.info("从 Redis 池弹出的专家 ID: {}", selectIds);
 
             if (selectIds == null || selectIds.isEmpty()) {
-                // popExpertIdsFromPool 抛异常或返回空，这里不会执行，但做防御性检查
                 throw new BaseException("当前无符合条件的专家");
             }
-            // 批量根据专家id查询专家信息（主键索引）
-            List<ExpertInfo>selected = expertInfoMapper.selectBatchIds(selectIds);
+            // 批量查询专家详情（走主键索引）
+            List<ExpertInfo> selected = expertInfoMapper.selectBatchIds(selectIds);
             log.info("根据 ID 查询到的有效专家数: {}", selected == null ? 0 : selected.size());
-            // 第三阶段：记录抽取历史，保证30天抽取不重复
+
+            if (selected == null || selected.isEmpty()) {
+                throw new BaseException("当前无符合条件的专家");
+            }
+            // ---- 第四阶段：生成批次号并持久化抽取记录 ----
             String batchNo = "EX" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
             LocalDateTime now = LocalDateTime.now();
-            for (ExpertInfo expert : selected){
+            for (ExpertInfo expert : selected) {
                 ExpertExtractRecord record = new ExpertExtractRecord();
                 record.setBatchNo(batchNo);
                 record.setExpertId(expert.getId());
@@ -708,32 +713,42 @@ public class ExpertServiceImpl implements ExpertService {
                 record.setTechnicalType(expert.getTechnicalType());
                 record.setLevel(expert.getLevel());
                 record.setExtractTime(now);
-                // 持久化到数据库
                 expertExtractRecordMapper.insert(record);
             }
-            // ---- 第四阶段：构建字典标签映射（用于将编码转换为可读名称） ----
-            // 分别获取申请类型、技术类型、级别的字典映射（如 "01" -> "初级"）
+            // ---- 第五阶段：构建字典标签映射 ----
             Map<String, String> applyTypeMap = buildDictLabelMap("apply_type");
             Map<String, String> technicalTypeMap = buildDictLabelMap("technical_type");
             Map<String, String> levelMap = buildDictLabelMap("level");
-            // ---- 第五阶段：组装返回结果对象 ----
+            // ---- 第六阶段：组装返回结果 ----
             ExtractResultVO result = new ExtractResultVO();
             result.setBatchNo(batchNo);
             result.setExtractTime(now);
-            result.setIsFromCache(false); // 本次为实时抽取，非缓存结果
-            // 将专家实体转换为前端展示用的VO，并填充字典标签
+            result.setIsFromCache(false);
             result.setExperts(selected.stream()
                     .map(e -> toExtractExpertVO(e, applyTypeMap, technicalTypeMap, levelMap))
                     .collect(Collectors.toList()));
-            // ---- 第六阶段：缓存结果 ----
-            // 将本次抽取结果放入缓存，后续相同条件的请求可直接复用（默认有过期时间，避免数据陈旧）
+            // ---- 第七阶段：写入缓存 ----
             putCache(cacheKey, result);
             log.info("抽取完成，batchNo: {}, 抽取人数: {}, 条件: applyType={}, technicalType={}, level={}",
                     batchNo, selected.size(), request.getApplyType(), request.getTechnicalType(), request.getLevel());
             return result;
         } finally {
-            // 确保锁在任何情况下（包括异常）都能被释放，避免死锁
-            extractLock.unlock();
+            // 释放锁
+            lock.unlock();
+            // 清理锁池（防止内存泄漏）
+            // 注意：只有锁未被持有时才能删除
+            cleanupLock(cacheKey, lock);
+        }
+    }
+
+    /**
+     * 清理锁池，防止内存泄漏。
+     * 只有当锁未被持有时才移除，避免正在等待的线程丢失锁。
+     */
+    private void cleanupLock(String cacheKey, ReentrantLock lock) {
+        // 检查锁是否被占用，如果未被占用则从池中移除
+        if (!lock.isLocked() && !lock.hasQueuedThreads()) {
+            lockPool.remove(cacheKey, lock);
         }
     }
 
@@ -1063,7 +1078,7 @@ public class ExpertServiceImpl implements ExpertService {
         RLock lock = redissonClient.getLock(lockKey);
         boolean locked = false;
         try {
-            // 尝试获取锁，等待 5 秒，持有 30 秒
+            // 尝试获取锁，等待 5 秒，持有为null，配合看门狗机制实现锁续期
             locked = lock.tryLock(5, TimeUnit.SECONDS);
             if (!locked) {
                 // 如果获取锁失败，直接抛出异常，避免后续无意义的 pop

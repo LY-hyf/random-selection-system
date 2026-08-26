@@ -7,6 +7,7 @@ import com.random.pojo.entity.ExpertInfo;
 import com.random.pojo.vo.ExpertVO;
 import com.random.pojo.vo.ExtractResultVO;
 import com.random.result.PageResult;
+import com.sun.xml.internal.bind.v2.TODO;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.Map;
@@ -118,6 +119,7 @@ public interface ExpertService {
      * @param request 抽取请求，包含抽取数量与筛选条件
      * @return 抽取结果
      */
+    // TODO 增加抽取成功邮箱发送通知功能，对发送内容和次数进行限制
     ExtractResultVO extract(ExtractRequest request);
 
     /**

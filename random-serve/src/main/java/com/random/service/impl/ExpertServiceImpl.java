@@ -649,6 +649,7 @@ public class ExpertServiceImpl implements ExpertService {
                 record.setTechnicalType(expert.getTechnicalType());
                 record.setLevel(expert.getLevel());
                 record.setExtractTime(now);
+                // 持久化到数据库
                 expertExtractRecordMapper.insert(record);
             }
             // ---- 第四阶段：构建字典标签映射（用于将编码转换为可读名称） ----

@@ -34,4 +34,6 @@ public interface AuthService {
      */
     UserInfoVO getCurrentUser();
 
+    // TODO 增加用户绑定邮箱功能（controller对传入参数进行校验，避免传递到service再进行校验，并对service返回的结果进行判断是否返回成功）
+
 }

@@ -237,26 +237,78 @@ public class ExpertServiceImpl implements ExpertService {
         return expertInfoMapper.getById(id);
     }
 
-    /**
-     * 编辑专家。
-     *
-     * @param id     专家 ID
-     * @param expert 专家实体
-     */
+//    /**
+//     * 编辑专家。
+//     *
+//     * @param id     专家 ID
+//     * @param expert 专家实体
+//     */
+//    @Override
+//    public void update(Long id, ExpertInfo expert) {
+//        expert.setId(id);
+//        expertInfoMapper.update(expert);
+//    }
+//
+//    /**
+//     * 逻辑删除专家。
+//     *
+//     * @param id 专家 ID
+//     */
+//    @Override
+//    public void delete(Long id) {
+//        expertInfoMapper.logicalDelete(id);
+//    }
+
+    @Override
+    public void delete(Long id) {
+        // 1. 逻辑删除
+        expertInfoMapper.logicalDelete(id);
+
+        // 2. 从所有 Redis 池子中移除该专家 ID
+        removeExpertIdFromAllPools(id);
+
+        log.info("逻辑删除专家并清理缓存池, id: {}", id);
+    }
+
     @Override
     public void update(Long id, ExpertInfo expert) {
+        // 获取旧数据（用于判断条件是否变化）
+        ExpertInfo oldExpert = expertInfoMapper.getById(id);
+
+        // 执行更新
         expert.setId(id);
         expertInfoMapper.update(expert);
+
+        // 如果申报类型、技术类型、级别发生了变化，需要清理旧池子
+        if (!oldExpert.getApplyType().equals(expert.getApplyType()) ||
+                !oldExpert.getTechnicalType().equals(expert.getTechnicalType()) ||
+                !oldExpert.getLevel().equals(expert.getLevel())) {
+
+            // 从所有池子中移除该专家（因为不知道他原来在哪个池子，全量清理最稳妥）
+            removeExpertIdFromAllPools(id);
+            log.info("专家条件变更，已清理缓存池, id: {}, 旧条件: {}-{}-{}",
+                    id, oldExpert.getApplyType(), oldExpert.getTechnicalType(), oldExpert.getLevel());
+        }
     }
 
     /**
-     * 逻辑删除专家。
-     *
-     * @param id 专家 ID
+     * 从所有 Redis 池子中移除指定专家 ID
      */
-    @Override
-    public void delete(Long id) {
-        expertInfoMapper.logicalDelete(id);
+    private void removeExpertIdFromAllPools(Long expertId) {
+        // 获取所有 pool 的 Key
+        Set<String> poolKeys = stringRedisTemplate.keys("pool:*");
+        if (poolKeys == null || poolKeys.isEmpty()) {
+            return;
+        }
+
+        String idStr = String.valueOf(expertId);
+        for (String key : poolKeys) {
+            // 从每个池子中移除该 ID
+            Long removed = stringRedisTemplate.opsForSet().remove(key, idStr);
+            if (removed != null && removed > 0) {
+                log.debug("从池子 {} 中移除专家 ID: {}", key, expertId);
+            }
+        }
     }
 
     /**
@@ -635,8 +687,15 @@ public class ExpertServiceImpl implements ExpertService {
                     request.getLevel(),
                     request.getCount() == null ? 5 : Math.min(request.getCount(), 20)
             );
+            log.info("从 Redis 池弹出的专家 ID: {}", selectIds);
+
+            if (selectIds == null || selectIds.isEmpty()) {
+                // popExpertIdsFromPool 抛异常或返回空，这里不会执行，但做防御性检查
+                throw new BaseException("当前无符合条件的专家");
+            }
             // 批量根据专家id查询专家信息（主键索引）
             List<ExpertInfo>selected = expertInfoMapper.selectBatchIds(selectIds);
+            log.info("根据 ID 查询到的有效专家数: {}", selected == null ? 0 : selected.size());
             // 第三阶段：记录抽取历史，保证30天抽取不重复
             String batchNo = "EX" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
             LocalDateTime now = LocalDateTime.now();
@@ -1032,13 +1091,13 @@ public class ExpertServiceImpl implements ExpertService {
                 lock.unlock();
             }
         }
-        // 3. 再次尝试弹出
+        // 3. 再次尝试弹出（允许不足 count）
         List<String> retryPopped = stringRedisTemplate.opsForSet().pop(poolKey, count);
-        if (retryPopped == null || retryPopped.size() < count) {
-            // 如果补货后仍然不足，说明数据库记录本身少于请求数量，抛出明确异常
-            int actual = retryPopped == null ? 0 : retryPopped.size();
-            throw new BaseException("符合条件的专家不足 " + count + " 人，当前仅 " + actual + " 人");
+        // 如果补货后仍然不足 count，但至少有一个，就返回已有的
+        if (retryPopped == null || retryPopped.isEmpty()) {
+            throw new BaseException("当前无符合条件的专家可抽取");
         }
+        // ✅ 关键改动：不再要求 >= count，只要有就返回
         return retryPopped.stream().map(Long::parseLong).collect(Collectors.toList());
     }
 

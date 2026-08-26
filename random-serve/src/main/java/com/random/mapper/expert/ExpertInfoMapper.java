@@ -192,4 +192,18 @@ public interface ExpertInfoMapper {
             "</foreach>" +
             "</script>")
     List<ExpertInfo> selectBatchIds(@Param("ids") List<Long> ids);
+
+    /**
+     * 获取最近 N 天最热门的 Top K 条件组合
+     * （基于抽取记录统计）
+     */
+    @Select("SELECT apply_type, technical_type, level, COUNT(*) AS extract_count " +
+            "FROM expert_extract_record " +
+            "WHERE extract_time > DATE_SUB(NOW(), INTERVAL #{days} DAY) " +
+            "GROUP BY apply_type, technical_type, level " +
+            "ORDER BY extract_count DESC " +
+            "LIMIT #{top}")
+    List<Map<String, Object>> getHotCombinations(@Param("days") int days, @Param("top") int top);
+
+
 }
